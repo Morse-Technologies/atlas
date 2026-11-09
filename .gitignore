@@ -1,0 +1,56 @@
+.cursor
+.github
+.claude
+
+# --- Private: never in the open core ---
+
+# OS and local tool settings
+.DS_Store
+.claude/settings.local.json
+
+# Business and design docs (pricing, Pro internals, sales deck)
+docs/
+
+# Design prototype and AI design-tool output
+design/
+app/.impeccable/
+app/.taste-skill/
+app/DESIGN.md
+app/PRODUCT.md
+
+# Brand: Apache-2.0 does not cover the logo (TRADEMARKS.md)
+app/public/atlas-icon.svg
+
+# --- Atlas Pro frontend (keep these in the private repo) ---
+# Panel / dashboard
+app/src/app/(app)/dashboard/
+app/src/features/dashboard/
+app/src/ui/organisms/Widgets.tsx
+# Knowledge map
+app/src/app/(app)/map/
+app/src/features/quality/MapScreen.tsx
+app/src/ui/organisms/KnowledgeGraph.tsx
+app/src/ui/organisms/KnowledgeMap.tsx
+# Quality alerts
+app/src/app/(app)/alerts/
+app/src/features/quality/AlertsScreen.tsx
+app/src/ui/organisms/Alerts.tsx
+# Audit
+# Users is Core: local accounts must be manageable and deletable (GDPR) without Pro.
+app/src/app/(app)/audit/
+app/src/features/admin/AuditScreen.tsx
+
+# Local deploy secrets and mounted sources
+deploy/compose/.env
+deploy/compose/sources/
+
+# Local environment files hold secrets. The example is the only one that is committed.
+.env.*
+!.env.example
+
+# Development licenses and their throwaway keys.
+deploy/compose/license/*
+!deploy/compose/license/.gitkeep
+
+# Performance reports and their session files.
+deploy/perf-results/
