@@ -1,0 +1,54 @@
+# Code rules of ATLAS_DESIGN.md §22, enforced here rather than by memory:
+#   functions <= 20 lines, <= 3 parameters, no magic numbers, low complexity.
+version: "2"
+
+linters:
+  enable:
+    - revive
+    - gocyclo
+    - staticcheck
+    - errcheck
+    - govet
+  settings:
+    gocyclo:
+      min-complexity: 10
+    staticcheck:
+      # S1016 suggests converting one event struct into another because their fields match today.
+      # Explicit construction stays correct when the two events diverge (rule 4: no clever code).
+      checks: ["all", "-S1016", "-ST1000", "-ST1003"]
+    revive:
+      rules:
+        - name: function-length
+          arguments: [20, 20] # [max statements, max lines]; a statement is at least a line, so lines rule
+        - name: argument-limit
+          arguments: [3]
+        - name: add-constant
+          arguments:
+            - maxLitCount: "3"
+              allowStrs: '""'
+              allowInts: "0,1,-1,2"
+              allowFloats: "0.0,1.0"
+              ignoreFuncs: "fmt\\.*,errors\\.*,slog\\.*,flag\\.*"
+        - name: exported
+        - name: var-naming
+  exclusions:
+    generated: strict
+    # Unchecked Close/Remove on read-only or temp resources and fmt.Fprint* to buffered writers.
+    presets: [std-error-handling]
+    rules:
+      # Kind/InsertOpts/Tenant implement river.JobArgs and jobs.TenantArgs; the type comment documents them.
+      - path: internal/events/events\.go
+        text: "exported method .*\\.(Kind|InsertOpts|Tenant) should have comment"
+        linters: [revive]
+      # Test tables and fixtures are literal data.
+      - path: _test\.go
+        text: "add-constant"
+        linters: [revive]
+      # One-line 501 stubs; the file header documents them all.
+      - path: internal/httpapi/unimplemented\.go
+        text: "exported"
+        linters: [revive]
+
+formatters:
+  enable:
+    - gofmt
