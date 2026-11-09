@@ -1,0 +1,5 @@
+# Only for performance tests (deploy/scripts/perf.sh): the synthetic corpus is written to Postgres from the host.
+# Never use it on a real installation.
+services:
+  postgres:
+    ports: ["127.0.0.1:54329:5432"]

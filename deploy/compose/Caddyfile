@@ -1,0 +1,41 @@
+# One origin for the browser: the interface and the API behind the same TLS address, so the session cookie
+# needs no CORS (ATLAS.md §4.2). ATLAS_HOST is the name people type; `tls internal` makes Caddy sign it with its
+# own CA (install that CA on the clients), or replace it with `tls /certs/atlas.crt /certs/atlas.key`.
+{$ATLAS_HOST:localhost} {
+	tls internal
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Uploads are the one request that may be large. The API enforces 200 MB per file and 50 files.
+	@uploads path /api/v1/uploads
+	handle @uploads {
+		request_body {
+			max_size 1100MB
+		}
+		reverse_proxy api:8080 {
+			transport http {
+				read_timeout 15m
+			}
+		}
+	}
+
+	# Answers stream as server-sent events: flush every write instead of buffering.
+	handle /api/* {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy api:8080 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

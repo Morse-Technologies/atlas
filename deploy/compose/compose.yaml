@@ -1,0 +1,291 @@
+# Atlas (ATLAS.md §4.2): Postgres, the file parsers, the atlas roles, the web interface and Caddy.
+# Model servers are optional profiles: `models` (embeddings + reranker), `gpu` (vLLM) or `cpu` (Ollama).
+#
+#   cp .env.example .env            # set the passwords and the secret key
+#   docker compose up -d --build
+#   docker compose --profile models --profile gpu up -d   # with the models
+#   docker compose exec worker /atlas setup --org "My organization"
+#   docker compose exec worker /atlas source add --name Docs --path /sources/docs   # path as the worker sees it
+#   docker compose exec worker /atlas quarantine list
+name: atlas
+
+x-atlas: &atlas
+  image: atlas:dev
+  build:
+    context: ../../server
+  restart: unless-stopped
+  environment: &atlas-env
+    ATLAS_DATABASE_URL: postgres://atlas_app:${ATLAS_APP_PASSWORD:?set it in .env}@postgres:5432/atlas?sslmode=disable
+    ATLAS_DOCLING_URL: http://docling:5001
+    ATLAS_GOTENBERG_URL: http://gotenberg:3000
+    ATLAS_BLOB_DIR: /data
+    ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-info}
+    # Optional models. Empty means that part is off and search degrades (ATLAS.md §11.3).
+    ATLAS_EMBED_URL: ${ATLAS_EMBED_URL:-}
+    ATLAS_EMBED_API: ${ATLAS_EMBED_API:-tei} # tei, or ollama for trials
+    ATLAS_RERANK_URL: ${ATLAS_RERANK_URL:-}
+    ATLAS_RERANK_TIMEOUT: ${ATLAS_RERANK_TIMEOUT:-5s}
+    ATLAS_DB_MAX_CONNS: ${ATLAS_DB_MAX_CONNS:-24}
+    ATLAS_SEARCH_COMMON_SHARE: ${ATLAS_SEARCH_COMMON_SHARE:-0.02}
+    ATLAS_LLM_URL: ${ATLAS_LLM_URL:-}
+    ATLAS_LLM_MODEL: ${ATLAS_LLM_MODEL:-}
+  networks: [core, parsers, models]
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+# Services that open customer files: no route out, read-only root, no capabilities (ATLAS.md §4.2, §8.1).
+x-isolated: &isolated
+  restart: unless-stopped
+  networks: [parsers]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    restart: unless-stopped
+    # Building or rebuilding a large vector index uses shared memory in parallel; Docker's default 64 MB is too
+    # small and the build fails with "No space left on device".
+    shm_size: ${ATLAS_PG_SHM:-1gb}
+    # Sized for a machine with about 8 GB shared with the other services; raise them with the RAM (docs/OPERACION.md).
+    # The defaults of Postgres (128 MB of buffers) keep a large vector index on disk and make every question slow.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${ATLAS_PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${ATLAS_PG_CACHE:-3GB}
+      - -c
+      - maintenance_work_mem=${ATLAS_PG_MAINTENANCE_MEM:-1GB}
+      - -c
+      - max_parallel_maintenance_workers=${ATLAS_PG_MAINTENANCE_WORKERS:-4}
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=${ATLAS_PG_MAX_CONNECTIONS:-200}
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas_owner
+      POSTGRES_PASSWORD: ${ATLAS_OWNER_PASSWORD:?set it in .env}
+      ATLAS_APP_PASSWORD: ${ATLAS_APP_PASSWORD:?set it in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks: [core]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas_owner -d atlas"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    image: atlas:dev
+    build:
+      context: ../../server
+    command: ["migrate"]
+    environment:
+      ATLAS_MIGRATE_DATABASE_URL: postgres://atlas_owner:${ATLAS_OWNER_PASSWORD}@postgres:5432/atlas?sslmode=disable
+    networks: [core]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *atlas
+    command: ["api"]
+    environment:
+      <<: *atlas-env
+      ATLAS_SECRET_KEY: ${ATLAS_SECRET_KEY:?set it in .env (openssl rand -base64 32)}
+      ATLAS_SOURCE_ROOTS: /sources # the only folders an administrator may register
+      ATLAS_LICENSE_FILE: ${ATLAS_LICENSE_FILE:-}
+      ATLAS_LICENSE_PUBLIC_KEY: ${ATLAS_LICENSE_PUBLIC_KEY:-}
+      ATLAS_NETWORK_ISOLATED: ${ATLAS_NETWORK_ISOLATED:-true}
+    ports: ["127.0.0.1:8080:8080"] # for local diagnostics only; people reach the API through Caddy
+    healthcheck:
+      test: ["CMD", "/atlas", "healthcheck"] # distroless: no shell or curl
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    volumes:
+      - blobs:/data
+      - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
+      - ${ATLAS_LICENSE_DIR:-./license}:/license:ro
+
+  worker:
+    <<: *atlas
+    command: ["worker"]
+    volumes:
+      - blobs:/data
+      - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
+
+  watch:
+    <<: *atlas
+    command: ["watch"]
+    volumes:
+      - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
+
+  docling:
+    <<: *isolated
+    image: quay.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
+    environment:
+      DOCLING_SERVE_MAX_NUM_PAGES: "2000" # same limit as maxPages in internal/documents
+    mem_limit: ${ATLAS_DOCLING_MEM:-8g}
+    cpus: 4
+    pids_limit: 512
+
+  gotenberg:
+    <<: *isolated
+    image: gotenberg/gotenberg:8.39.0@sha256:13672f317b443c793e972b1bd2155ec62a3e7b6891b411e8196442cc053ee5f5
+    command: ["gotenberg", "--chromium-disable-javascript=true"]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+
+  web:
+    image: atlas-web:dev
+    build:
+      context: ../../app
+      args:
+        NEXT_PUBLIC_ATLAS_EDITION: ${ATLAS_EDITION:-core}
+        NEXT_PUBLIC_ATLAS_API: live
+    restart: unless-stopped
+    networks: [edge]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      ATLAS_HOST: ${ATLAS_HOST:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [core, edge]
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  # Development and tests only: one container that speaks the embedding, rerank and chat protocols with simple,
+  # deterministic answers (server/cmd/fakemodels). Use it with ATLAS_EMBED_URL=http://fake-models:8080,
+  # ATLAS_RERANK_URL=http://fake-models:8080 and ATLAS_LLM_URL=http://fake-models:8080/v1.
+  fake-models:
+    profiles: [fake]
+    image: atlas:dev
+    entrypoint: ["/fakemodels"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/fakemodels", "-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [models]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # Models. They never reach the internet: weights are read from ATLAS_MODELS_DIR (placed there by the installer
+  # bundle), and the network is internal. Pick the TEI image for your hardware with ATLAS_TEI_IMAGE
+  # (cpu-1.8 by default; see the TEI documentation for the CUDA tags).
+  tei-embed:
+    profiles: [models]
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    command: ["--model-id", "/models/bge-m3", "--port", "80"]
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+    volumes: ["${ATLAS_MODELS_DIR:-./models}:/models:ro"]
+    networks: [models]
+
+  tei-rerank:
+    profiles: [models]
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    command: ["--model-id", "/models/bge-reranker-v2-m3", "--port", "80"]
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+    volumes: ["${ATLAS_MODELS_DIR:-./models}:/models:ro"]
+    networks: [models]
+
+  # With a GPU: vLLM, answering at priority 0 ahead of background work (ATLAS.md §11.4).
+  # Set ATLAS_LLM_URL=http://llm:8000/v1 and ATLAS_LLM_MODEL to the served name.
+  llm:
+    profiles: [gpu]
+    image: ${ATLAS_VLLM_IMAGE:-vllm/vllm-openai:latest}
+    command: ["--model", "/models/llm", "--served-model-name", "${ATLAS_LLM_MODEL:-atlas-llm}", "--scheduling-policy", "priority", "--gpu-memory-utilization", "0.65"]
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+    volumes: ["${ATLAS_MODELS_DIR:-./models}:/models:ro"]
+    networks: [models]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  # Without a GPU: Ollama, for the language model and for bge-m3 embeddings (ATLAS_EMBED_API=ollama). Slower: a
+  # trial, not production. Set ATLAS_LLM_URL=http://llm-cpu:11434/v1 and ATLAS_EMBED_URL=http://llm-cpu:11434.
+  # The models network has no internet, so ollama-pull downloads the models once into the shared volume.
+  ollama-pull:
+    profiles: [cpu]
+    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:latest}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - ollama serve >/dev/null 2>&1 & until ollama list >/dev/null 2>&1; do sleep 1; done;
+        ollama pull ${ATLAS_LLM_MODEL:-qwen2.5:1.5b} && ollama pull ${ATLAS_EMBED_MODEL:-bge-m3}
+    volumes: ["ollama:/root/.ollama"]
+    networks: [core]
+    restart: "no"
+
+  # Ollama cannot rerank, and Atlas never lets the model write an answer without a reliable ranking. For trials
+  # a small multilingual TEI reranker downloads its weights once into a volume (so it also joins the core
+  # network, which has internet). Set ATLAS_RERANK_URL=http://rerank-cpu:80. Production uses bge-reranker-v2-m3.
+  rerank-cpu:
+    profiles: [cpu]
+    platform: linux/amd64 # TEI publishes no arm64 CPU image: on Apple silicon it runs emulated, slowly
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    command: ["--model-id", "${ATLAS_RERANK_TRIAL_MODEL:-BAAI/bge-reranker-base}", "--port", "80", "--tokenization-workers", "1"]
+    restart: unless-stopped
+    mem_limit: ${ATLAS_RERANK_MEM:-4g}
+    volumes: ["tei-cache:/data"]
+    networks: [core, models]
+
+  llm-cpu:
+    profiles: [cpu]
+    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:latest}
+    restart: unless-stopped
+    mem_limit: ${ATLAS_OLLAMA_MEM:-4g}
+    volumes: ["ollama:/root/.ollama"]
+    networks: [models]
+    depends_on:
+      ollama-pull: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+networks:
+  core: {}
+  edge: {} # between Caddy and the web interface
+  parsers:
+    internal: true
+  models:
+    internal: true
+
+volumes:
+  pgdata: {}
+  blobs: {}
+  caddy_data: {}
+  caddy_config: {}
+  ollama: {}
+  tei-cache: {}
