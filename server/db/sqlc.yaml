@@ -1,0 +1,69 @@
+version: "2"
+overrides:
+  go:
+    overrides:
+      - db_type: uuid
+        go_type: github.com/google/uuid.UUID
+      - db_type: uuid
+        nullable: true
+        go_type:
+          import: github.com/google/uuid
+          type: UUID
+          pointer: true
+      - db_type: vector
+        go_type: string # sent and read as the text form "[0.1,0.2]"; only SQL ever compares vectors
+      - db_type: date
+        go_type: time.Time
+      - db_type: date
+        nullable: true
+        go_type:
+          type: time.Time
+          pointer: true
+      - db_type: timestamptz
+        go_type: time.Time
+      - db_type: timestamptz
+        nullable: true
+        go_type:
+          type: time.Time
+          pointer: true
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: queries/access.sql
+    gen:
+      go: { package: accessdb, out: ../internal/access/accessdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/sources.sql
+    gen:
+      go: { package: sourcesdb, out: ../internal/sources/sourcesdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/documents.sql
+    gen:
+      go: { package: documentsdb, out: ../internal/documents/documentsdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/catalog.sql
+    gen:
+      go: { package: catalogdb, out: ../internal/catalog/catalogdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/audit.sql
+    gen:
+      go: { package: auditdb, out: ../internal/audit/auditdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/platform.sql
+    gen:
+      go: { package: platformdb, out: ../internal/platform/idempotency/platformdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/search.sql
+    gen:
+      go: { package: searchdb, out: ../internal/search/searchdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }
+  - engine: postgresql
+    schema: migrations
+    queries: queries/graph.sql
+    gen:
+      go: { package: graphdb, out: ../internal/graph/graphdb, sql_package: pgx/v5, emit_pointers_for_null_types: true }

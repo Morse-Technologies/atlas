@@ -1,0 +1,942 @@
+openapi: 3.1.0
+info:
+  title: Atlas API
+  version: 0.1.0
+  description: |
+    Contract between the Atlas backend and its frontend (ATLAS.md §14). Source of truth for the Go server
+    (oapi-codegen) and the TypeScript client. JSON is snake_case on the wire. Errors are RFC 9457 Problem
+    Details. Writes that create or change data accept an Idempotency-Key. Lists that grow page with
+    `limit` and `cursor`; the next page's cursor comes in the `Next-Cursor` header (absent on the last page). `x-atlas-role` is the minimum role of each operation.
+    Part 1 implements only the health endpoints; every other operation answers 501 until its module lands (docs/C4.md §3).
+servers:
+  - url: /
+security:
+  - session: []
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Process is alive
+      security: []
+      responses:
+        "200": { description: Alive, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Dependencies are reachable
+      security: []
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
+        "503": { description: Not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
+  /version:
+    get:
+      operationId: getVersion
+      summary: Build and schema version
+      security: []
+      responses:
+        "200": { description: Version, content: { application/json: { schema: { $ref: "#/components/schemas/Version" } } } }
+
+  /api/v1/setup:
+    post:
+      operationId: setup
+      summary: First-run setup; only while no user exists
+      security: []
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SetupRequest" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/SetupResponse" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      operationId: getSetupStatus
+      summary: Whether first-run setup is still open; the UI uses it to allow or block /setup
+      security: []
+      responses:
+        "200": { description: Status, content: { application/json: { schema: { $ref: "#/components/schemas/SetupStatus" } } } }
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/LoginRequest" } } } }
+      responses:
+        "200": { description: Challenge, content: { application/json: { schema: { $ref: "#/components/schemas/LoginChallenge" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/auth/verify:
+    post:
+      operationId: verifyLogin
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/VerifyRequest" } } } }
+      responses:
+        "204": { description: Session cookie set, headers: { Set-Cookie: { schema: { type: string }, description: "atlas_session; HttpOnly, Secure, SameSite=Lax" } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      x-atlas-role: session
+      responses:
+        "204": { description: Session ended, headers: { Set-Cookie: { schema: { type: string }, description: "atlas_session cleared" } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/me:
+    get:
+      operationId: getMe
+      x-atlas-role: session
+      responses:
+        "200": { description: Current user, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteMe
+      description: Erases the signed-in account and ends its sessions (GDPR art. 17). Audit events keep a pseudonymous id.
+      x-atlas-role: session
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "204": { description: Account deleted }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/me/password:
+    put:
+      operationId: changeMyPassword
+      description: Changes the signed-in person's password. Their other sessions end; this one stays.
+      x-atlas-role: session
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PasswordChange" } } } }
+      responses:
+        "204": { description: Password changed }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/stats/overview:
+    get:
+      operationId: getOverview
+      x-atlas-role: viewer
+      responses:
+        "200": { description: Aggregates, content: { application/json: { schema: { $ref: "#/components/schemas/Overview" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/ask:
+    post:
+      operationId: ask
+      summary: Ask a question; the answer streams as Server-Sent Events
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AskRequest" } } } }
+      responses:
+        "200":
+          description: One AskEvent per SSE `data:` line, ending with `done` or `error`
+          content: { text/event-stream: { schema: { $ref: "#/components/schemas/AskEvent" } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Conversations, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ConversationSummary" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/conversations/{id}:
+    get:
+      operationId: getConversation
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Conversation, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationDetail" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/answers/{id}/feedback:
+    post:
+      operationId: sendFeedback
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FeedbackRequest" } } } }
+      responses:
+        "204": { description: Saved }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/documents:
+    get:
+      operationId: listDocuments
+      x-atlas-role: viewer
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: band, in: query, schema: { type: string, enum: [procedure, manual, norm, erp, all] } }
+        - { name: status, in: query, schema: { type: string, enum: [current, draft, obsolete, unknown, all] } }
+        - { name: source_id, in: query, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200": { description: Documents the user may read, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Document" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/documents/{id}:
+    get:
+      operationId: getDocument
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Document, content: { application/json: { schema: { $ref: "#/components/schemas/Document" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/documents/{id}/related:
+    get:
+      operationId: listRelated
+      x-atlas-role: viewer
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Related documents, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Related" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/documents/{id}/metadata:
+    patch:
+      operationId: correctMetadata
+      x-atlas-role: editor_metadata
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataPatch" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Document" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/documents/{id}/versions/{version_id}/file:
+    get:
+      operationId: getVersionFile
+      summary: The file to view (PDF), after the ACL check; supports Range
+      x-atlas-role: viewer
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: version_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: File, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        "206": { description: Partial file, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/catalog:
+    get:
+      operationId: getCatalog
+      summary: The tenant's document types and entity types (core seed plus installed domain pack)
+      x-atlas-role: viewer
+      responses:
+        "200": { description: Catalog, content: { application/json: { schema: { $ref: "#/components/schemas/Catalog" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/sources:
+    get:
+      operationId: listSources
+      x-atlas-role: admin
+      responses:
+        "200": { description: Sources, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Source" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createSource
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SourceCreate" } } } }
+      responses:
+        "201": { description: Created; the first scan is scheduled, content: { application/json: { schema: { $ref: "#/components/schemas/Source" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/sources/check:
+    post:
+      operationId: checkFolder
+      summary: Read-only access check of a folder path, before it is added as a source
+      x-atlas-role: admin
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FolderCheckRequest" } } } }
+      responses:
+        "200": { description: Result, content: { application/json: { schema: { $ref: "#/components/schemas/FolderCheckResult" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/uploads:
+    post:
+      operationId: uploadFiles
+      summary: Add files to the built-in `upload` source; they enter the normal ingestion pipeline
+      x-atlas-role: editor_metadata
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties: { files: { type: array, items: { type: string, format: binary } } }
+      responses:
+        "202": { description: Accepted for ingestion, content: { application/json: { schema: { $ref: "#/components/schemas/UploadResult" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/sources/{id}:
+    patch:
+      operationId: updateSource
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SourcePatch" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Source" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/sources/{id}/sync:
+    post:
+      operationId: syncSource
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { description: Rescan scheduled }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/ingestion/runs:
+    get:
+      operationId: listRuns
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Recent scans, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/IngestionRun" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/ingestion/quarantine:
+    get:
+      operationId: listQuarantine
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Quarantined files, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/QuarantineItem" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/ingestion/quarantine/{id}/retry:
+    post:
+      operationId: retryQuarantine
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { description: Fetch scheduled }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/alerts:
+    get:
+      operationId: listAlerts
+      x-atlas-role: curator
+      x-atlas-feature: alerts
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Alerts, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Alert" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/alerts/{id}:
+    patch:
+      operationId: updateAlert
+      x-atlas-role: curator
+      x-atlas-feature: alerts
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AlertPatch" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Alert" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/graph/neighborhood:
+    get:
+      operationId: getGraph
+      x-atlas-role: viewer
+      x-atlas-feature: map
+      parameters:
+        - { name: node_id, in: query, schema: { type: string } }
+        - { name: depth, in: query, schema: { type: integer, minimum: 1, maximum: 3 } }
+      responses:
+        "200": { description: Subgraph, content: { application/json: { schema: { $ref: "#/components/schemas/Graph" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/graph/edges/{id}:
+    patch:
+      operationId: decideEdge
+      summary: Confirm or reject a suggested link
+      x-atlas-role: curator
+      x-atlas-feature: map
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EdgeDecision" } } } }
+      responses:
+        "204": { description: Saved }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/audit/export:
+    get:
+      operationId: exportAudit
+      summary: Signed export of the audit log for a date range
+      x-atlas-role: auditor
+      x-atlas-feature: audit_reports
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+        - { name: format, in: query, schema: { type: string, enum: [csv, jsonl], default: csv } }
+      responses:
+        "200": { description: File, content: { text/csv: { schema: { type: string } }, application/x-ndjson: { schema: { type: string } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/audit/events:
+    get:
+      operationId: listAuditEvents
+      x-atlas-role: auditor
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Events, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/AuditEvent" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/audit/verify:
+    post:
+      operationId: verifyAudit
+      x-atlas-role: auditor
+      responses:
+        "200": { description: Chain check, content: { application/json: { schema: { $ref: "#/components/schemas/AuditVerification" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Users, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Person" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/users/{id}:
+    delete:
+      operationId: deleteUser
+      description: Erases an account and ends its sessions. The last admin cannot be deleted.
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "204": { description: Account deleted }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/users/{id}/roles:
+    patch:
+      operationId: updateRoles
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RolesUpdate" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/settings:
+    get:
+      operationId: getSettings
+      x-atlas-role: admin
+      responses:
+        "200": { description: Settings, content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updateSettings
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SettingsPatch" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/system/license:
+    get:
+      operationId: getLicense
+      x-atlas-role: session
+      responses:
+        "200": { description: License, content: { application/json: { schema: { $ref: "#/components/schemas/License" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: atlas_session }
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 128 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, description: "Opaque; from the previous page's Next-Cursor header", schema: { type: string } }
+
+  responses:
+    Problem:
+      description: RFC 9457 Problem Details
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        trace_id: { type: string }
+
+    Health:
+      type: object
+      required: [status]
+      properties: { status: { type: string, enum: [ok] } }
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks: { type: object, additionalProperties: { type: string, description: "ok or the error" } }
+    Version:
+      type: object
+      required: [version, schema]
+      properties:
+        version: { type: string }
+        schema: { type: integer, format: int64 }
+
+    SetupRequest:
+      type: object
+      required: [org_name, email, password, name]
+      properties:
+        org_name: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12 }
+        languages: { type: array, items: { type: string } }
+        domain_pack: { type: string }
+    SetupResponse:
+      type: object
+      required: [totp_uri]
+      properties: { totp_uri: { type: string } }
+    SetupStatus:
+      type: object
+      required: [setup_done]
+      properties: { setup_done: { type: boolean } }
+    Catalog:
+      type: object
+      required: [doc_types, entity_types]
+      properties:
+        doc_types:
+          type: array
+          items:
+            type: object
+            required: [key, label, band]
+            properties: { key: { type: string }, label: { type: string }, band: { $ref: "#/components/schemas/BandKind" } }
+        entity_types:
+          type: array
+          items:
+            type: object
+            required: [key, label]
+            properties: { key: { type: string }, label: { type: string } }
+    SourceCreate:
+      type: object
+      required: [name, kind, location]
+      properties:
+        name: { type: string, minLength: 1 }
+        kind: { type: string, enum: [folder, sharepoint, erp_sql] }
+        location: { type: string, minLength: 1 }
+    FolderCheckRequest:
+      type: object
+      required: [path]
+      properties: { path: { type: string, minLength: 1 } }
+    FolderCheckResult:
+      type: object
+      required: [ok, detail]
+      properties: { ok: { type: boolean }, detail: { type: string } }
+    UploadResult:
+      type: object
+      required: [accepted, rejected]
+      properties:
+        accepted: { type: integer }
+        rejected: { type: array, items: { type: object, required: [name, reason], properties: { name: { type: string }, reason: { type: string } } } }
+    EdgeDecision:
+      type: object
+      required: [status]
+      properties: { status: { type: string, enum: [confirmed, rejected] } }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }
+    LoginChallenge:
+      type: object
+      required: [challenge_id, needs_code]
+      properties:
+        challenge_id: { type: string }
+        needs_code: { type: boolean }
+    VerifyRequest:
+      type: object
+      required: [challenge_id]
+      properties:
+        challenge_id: { type: string }
+        code: { type: string, pattern: "^[0-9]{6}$" }
+
+    Role: { type: string, enum: [viewer, editor_metadata, curator, organizer_approver, admin, auditor] }
+    Person:
+      type: object
+      required: [id, name, email, department, roles, is_active, last_active_at, hue]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        department: { type: string }
+        roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
+        is_active: { type: boolean }
+        last_active_at: { type: [string, "null"], format: date-time }
+        hue: { type: integer }
+    RolesUpdate:
+      type: object
+      required: [roles]
+      properties: { roles: { type: array, items: { $ref: "#/components/schemas/Role" } } }
+
+    BandKind: { type: string, enum: [procedure, manual, norm, erp] }
+    DocStatus: { type: string, enum: [current, draft, obsolete, unknown] }
+    EntityRef:
+      type: object
+      required: [type, label]
+      properties:
+        type: { type: string, description: "key in catalog.entity_types" }
+        label: { type: string }
+    Rect:
+      type: object
+      required: [x, y, w, h]
+      properties: { x: { type: number }, y: { type: number }, w: { type: number }, h: { type: number } }
+    DocumentVersion:
+      type: object
+      required: [id, revision, state, indexed_at, pages]
+      properties:
+        id: { type: string, format: uuid }
+        revision: { type: string }
+        state: { type: string, enum: [indexed, superseded, processing, quarantined] }
+        indexed_at: { type: string, format: date-time }
+        pages: { type: integer }
+    FieldProvenance:
+      type: object
+      required: [field, value, source, confidence]
+      properties:
+        field: { type: string }
+        value: { type: string }
+        source: { type: string, enum: [manual, titleblock, path, erp, llm] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    Document:
+      type: object
+      required: [id, code, title, doc_type, band, status, department, entities, attributes, owner_id, approved_at,
+                 review_due_at, source_id, path, language, current_version_id, versions, provenance, summary]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        title: { type: string }
+        doc_type: { type: string, description: "key in the tenant's document-type taxonomy" }
+        band: { $ref: "#/components/schemas/BandKind" }
+        status: { $ref: "#/components/schemas/DocStatus" }
+        department: { type: string }
+        entities: { type: array, items: { $ref: "#/components/schemas/EntityRef" } }
+        attributes: { type: object, additionalProperties: { type: string }, description: "domain-pack fields" }
+        owner_id: { type: [string, "null"], format: uuid }
+        approved_at: { type: [string, "null"], format: date }
+        review_due_at: { type: [string, "null"], format: date }
+        source_id: { type: string, format: uuid }
+        path: { type: string }
+        language: { type: string }
+        current_version_id: { type: string, format: uuid }
+        versions: { type: array, items: { $ref: "#/components/schemas/DocumentVersion" } }
+        provenance: { type: array, items: { $ref: "#/components/schemas/FieldProvenance" } }
+        summary: { type: string }
+    MetadataPatch:
+      type: object
+      description: Fields a person corrects by hand; each change is recorded with source `manual`.
+      minProperties: 1
+      properties:
+        code: { type: string }
+        title: { type: string }
+        doc_type: { type: string }
+        status: { $ref: "#/components/schemas/DocStatus" }
+        department: { type: string }
+        owner_id: { type: [string, "null"], format: uuid }
+        approved_at: { type: [string, "null"], format: date }
+        review_due_at: { type: [string, "null"], format: date }
+        language: { type: string }
+        attributes: { type: object, additionalProperties: { type: string } }
+    EdgeKind: { type: string, enum: [references, cites_norm, mentions, owned_by, contradicts, duplicates, belongs_to] }
+    Related:
+      type: object
+      required: [document, via]
+      properties:
+        document: { $ref: "#/components/schemas/Document" }
+        via: { $ref: "#/components/schemas/EdgeKind" }
+
+    Citation:
+      type: object
+      required: [n, document_id, version_id, page, section, quote, score]
+      properties:
+        n: { type: integer }
+        document_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        page: { type: integer }
+        section: { type: string }
+        quote: { type: string }
+        score: { type: number }
+        bbox: { $ref: "#/components/schemas/Rect" }
+    Outcome: { type: string, enum: [answered, not_found, refused, error] }
+    Answer:
+      type: object
+      required: [id, conversation_id, question, asked_by_id, asked_at, outcome, text, citations, notes, nearby,
+                 latency_ms, model, scope, feedback]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        question: { type: string }
+        asked_by_id: { type: string, format: uuid }
+        asked_at: { type: string, format: date-time }
+        outcome: { $ref: "#/components/schemas/Outcome" }
+        text: { type: string }
+        citations: { type: array, items: { $ref: "#/components/schemas/Citation" } }
+        notes: { type: array, items: { type: string } }
+        nearby: { type: array, items: { type: string, format: uuid } }
+        latency_ms: { type: integer }
+        model: { type: string }
+        scope: { type: [string, "null"] }
+        feedback: { type: [string, "null"], enum: [up, down, null] }
+    AskRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, minLength: 1 }
+        conversation_id: { type: string, format: uuid }
+        scope: { type: [string, "null"] }
+    AskEvent:
+      oneOf:
+        - $ref: "#/components/schemas/AskMetaEvent"
+        - $ref: "#/components/schemas/AskTokenEvent"
+        - $ref: "#/components/schemas/AskDoneEvent"
+        - $ref: "#/components/schemas/AskErrorEvent"
+      discriminator:
+        propertyName: type
+        mapping:
+          meta: "#/components/schemas/AskMetaEvent"
+          token: "#/components/schemas/AskTokenEvent"
+          done: "#/components/schemas/AskDoneEvent"
+          error: "#/components/schemas/AskErrorEvent"
+    AskMetaEvent:
+      type: object
+      required: [type, answer_id, citations, notes]
+      properties:
+        type: { type: string, const: meta }
+        answer_id: { type: string, format: uuid }
+        citations: { type: array, items: { $ref: "#/components/schemas/Citation" } }
+        notes: { type: array, items: { type: string } }
+    AskTokenEvent:
+      type: object
+      required: [type, t]
+      properties:
+        type: { type: string, const: token }
+        t: { type: string }
+    AskDoneEvent:
+      type: object
+      required: [type, answer]
+      properties:
+        type: { type: string, const: done }
+        answer: { $ref: "#/components/schemas/Answer" }
+    AskErrorEvent:
+      type: object
+      required: [type, message]
+      properties:
+        type: { type: string, const: error }
+        message: { type: string }
+    Conversation:
+      type: object
+      required: [id, title, updated_at, answer_ids]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        updated_at: { type: string, format: date-time }
+        answer_ids: { type: array, items: { type: string, format: uuid } }
+    ConversationSummary:
+      allOf:
+        - $ref: "#/components/schemas/Conversation"
+        - type: object
+          required: [asked_by_id, last_outcome, sources]
+          properties:
+            asked_by_id: { type: string, format: uuid }
+            last_outcome: { $ref: "#/components/schemas/Outcome" }
+            sources: { type: array, items: { type: string } }
+    ConversationDetail:
+      type: object
+      required: [conversation, answers]
+      properties:
+        conversation: { $ref: "#/components/schemas/Conversation" }
+        answers: { type: array, items: { $ref: "#/components/schemas/Answer" } }
+    FeedbackRequest:
+      type: object
+      required: [value]
+      properties: { value: { type: string, enum: [up, down] } }
+
+    Source:
+      type: object
+      required: [id, name, kind, location, status, last_sync_at, last_error, pro, access, readers]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        access: { type: string, enum: [everyone, restricted], description: Who may read the documents of this source. }
+        readers: { type: array, items: { type: string, format: uuid }, description: The only people who may read it; empty when access is everyone. }
+        kind: { type: string, enum: [folder, sharepoint, erp_sql, upload] }
+        location: { type: string }
+        status: { type: string, enum: [active, paused, error] }
+        last_sync_at: { type: [string, "null"], format: date-time }
+        last_error: { type: [string, "null"] }
+        pro: { type: boolean }
+    SourcePatch:
+      type: object
+      properties:
+        paused: { type: boolean }
+        access: { type: string, enum: [everyone, restricted] }
+        readers: { type: array, items: { type: string, format: uuid }, description: Required when access is restricted. }
+    IngestionRun:
+      type: object
+      required: [id, source_id, started_at, finished_at, discovered, indexed, skipped, failed]
+      properties:
+        id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        discovered: { type: integer }
+        indexed: { type: integer }
+        skipped: { type: integer }
+        failed: { type: integer }
+    QuarantineItem:
+      type: object
+      required: [id, source_id, path, reason, detail, at]
+      properties:
+        id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        path: { type: string }
+        reason: { type: string, enum: [encrypted, corrupt, unsupported, too_large, hostile] }
+        detail: { type: string }
+        at: { type: string, format: date-time }
+
+    Alert:
+      type: object
+      required: [id, rule, severity, status, title, detail, document_ids, entity, assignee_id, first_seen_at,
+                 last_seen_at, evidence]
+      properties:
+        id: { type: string, format: uuid }
+        rule:
+          type: string
+          enum: [OBSOLETE_STANDARD, CONTRADICTION, NO_OWNER, ENTITY_NO_DOCS, SUSPECT_CONTENT, REVIEW_OVERDUE,
+                 OLD_VERSION_CIRCULATING, DUPLICATE]
+        severity: { type: string, enum: [high, medium, low] }
+        status: { type: string, enum: [open, ack, resolved, dismissed] }
+        title: { type: string }
+        detail: { type: string }
+        document_ids: { type: array, items: { type: string, format: uuid } }
+        entity: { oneOf: [{ $ref: "#/components/schemas/EntityRef" }, { type: "null" }] }
+        assignee_id: { type: [string, "null"], format: uuid }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        evidence:
+          type: array
+          items:
+            type: object
+            required: [document_id, page, quote]
+            properties:
+              document_id: { type: string, format: uuid }
+              page: { type: integer }
+              quote: { type: string }
+    PasswordChange:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, minLength: 12 }
+    AlertPatch:
+      type: object
+      properties:
+        status: { type: string, enum: [open, ack, resolved, dismissed] }
+        assignee_id: { type: [string, "null"], format: uuid }
+        note: { type: string }
+    Graph:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            required: [id, kind, label, ref]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [document, entity, person, department] }
+              label: { type: string }
+              ref: { type: [string, "null"] }
+              band: { $ref: "#/components/schemas/BandKind" }
+              entity_type: { type: string }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [id, source, target, kind, layer, status]
+            properties:
+              id: { type: string }
+              source: { type: string }
+              target: { type: string }
+              kind: { $ref: "#/components/schemas/EdgeKind" }
+              layer: { type: integer, enum: [1, 2, 3, 4] }
+              status: { type: string, enum: [confirmed, suggested, rejected] }
+
+    AuditEvent:
+      type: object
+      required: [id, at, actor_id, action, subject, detail, hash, prev_hash]
+      properties:
+        id: { type: integer, format: int64 }
+        at: { type: string, format: date-time }
+        actor_id: { type: [string, "null"], format: uuid }
+        action: { type: string }
+        subject: { type: string }
+        detail: { type: string }
+        hash: { type: string }
+        prev_hash: { type: string }
+    AuditVerification:
+      type: object
+      required: [ok, checked, broken_at]
+      properties:
+        ok: { type: boolean }
+        checked: { type: integer }
+        broken_at: { type: [integer, "null"], format: int64 }
+
+    Settings:
+      type: object
+      required: [org_name, chat_model, embed_model, rerank_model, network_isolated, require_citation,
+                 warn_contradictions, not_found_threshold, answer_language, retention_days]
+      properties:
+        org_name: { type: string }
+        chat_model: { type: string }
+        embed_model: { type: string }
+        rerank_model: { type: string }
+        network_isolated: { type: boolean }
+        require_citation: { type: boolean }
+        warn_contradictions: { type: boolean }
+        not_found_threshold: { type: number, minimum: 0, maximum: 1 }
+        answer_language: { type: string, enum: [user, es, en] }
+        retention_days: { type: integer }
+    SettingsPatch:
+      type: object
+      properties:
+        org_name: { type: string }
+        not_found_threshold: { type: number, minimum: 0, maximum: 1 }
+        answer_language: { type: string, enum: [user, es, en] }
+        retention_days: { type: integer }
+        require_citation: { type: boolean }
+        warn_contradictions: { type: boolean }
+    License:
+      type: object
+      required: [plan, organization, valid_until, features]
+      properties:
+        plan: { type: string, enum: [core, pro] }
+        organization: { type: string }
+        valid_until: { type: string, format: date }
+        features:
+          type: array
+          items: { type: string, enum: [alerts, map, sso, inherited_acl, audit_reports, sharepoint, erp] }
+    Overview:
+      type: object
+      required: [today, week, top_topics, documents, open_alerts, finding]
+      properties:
+        today:
+          type: object
+          required: [questions, answered, not_found, median_latency_ms]
+          properties:
+            questions: { type: integer }
+            answered: { type: integer }
+            not_found: { type: integer }
+            median_latency_ms: { type: integer }
+        week:
+          type: array
+          items:
+            type: object
+            required: [day, questions, not_found]
+            properties: { day: { type: string, format: date }, questions: { type: integer }, not_found: { type: integer } }
+        top_topics:
+          type: array
+          items:
+            type: object
+            required: [topic, count]
+            properties: { topic: { type: string }, count: { type: integer } }
+        documents:
+          type: object
+          required: [indexed, by_band, processing, quarantined]
+          properties:
+            indexed: { type: integer }
+            by_band: { type: object, additionalProperties: { type: integer } }
+            processing: { type: integer }
+            quarantined: { type: integer }
+        open_alerts:
+          type: object
+          required: [high, medium, low]
+          properties: { high: { type: integer }, medium: { type: integer }, low: { type: integer } }
+        finding: { type: string }
