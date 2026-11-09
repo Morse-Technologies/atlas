@@ -1,0 +1,291 @@
+{
+  "Pages": 9,
+  "Blocks": [
+    {
+      "Kind": "paragraph",
+      "Page": 1,
+      "Box": {
+        "x": 64,
+        "y": 58.53800000000001,
+        "w": 145.044,
+        "h": 8.325000000000045
+      },
+      "Text": "Calidad / Línea 2, CNC-07, CNC-08"
+    },
+    {
+      "Kind": "heading",
+      "Page": 1,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 56.01400000000001,
+        "h": 12.950000000000045
+      },
+      "Text": "1 Objeto"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 1,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 331.364,
+        "h": 28.175000000000068
+      },
+      "Text": "Este procedimiento describe el montaje del husillo en los centros de mecanizado CNC-07 y CNC-08 de la Línea 2."
+    },
+    {
+      "Kind": "heading",
+      "Page": 2,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 155.63799999999995,
+        "h": 12.950000000000045
+      },
+      "Text": "2 Alcance y referencias"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 2,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 343.5520000000001,
+        "h": 28.175000000000068
+      },
+      "Text": "Aplica a Mantenimiento y Calidad. Referencias: PNT-005 (calibración), PNT-009 (verificación de par), DRW-CNC07-SP (plano del husillo)."
+    },
+    {
+      "Kind": "heading",
+      "Page": 3,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 80.136,
+        "h": 12.950000000000045
+      },
+      "Text": "3 Seguridad"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 3,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 292.853,
+        "h": 10.175000000000068
+      },
+      "Text": "Antes de intervenir, aplicar PNT-021 (bloqueo y etiquetado)."
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 3,
+      "Box": {
+        "x": 72,
+        "y": 152.10199999999998,
+        "w": 311.2009999999999,
+        "h": 10.175000000000068
+      },
+      "Text": "Usar guantes y gafas. Retirar refrigerante de la zona de trabajo."
+    },
+    {
+      "Kind": "heading",
+      "Page": 4,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 64.56800000000001,
+        "h": 12.950000000000045
+      },
+      "Text": "4 Montaje"
+    },
+    {
+      "Kind": "step",
+      "Page": 4,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 330.1539999999999,
+        "h": 10.175000000000068
+      },
+      "Text": "Limpiar el cono del husillo y comprobar que no presenta golpes."
+    },
+    {
+      "Kind": "heading",
+      "Page": 4,
+      "Box": {
+        "x": 72,
+        "y": 170.10199999999998,
+        "w": 111.88100000000003,
+        "h": 10.175000000000068
+      },
+      "Text": "4.2 Tuerca del husillo"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 4,
+      "Box": {
+        "x": 72,
+        "y": 188.10199999999998,
+        "w": 382.09599999999995,
+        "h": 28.175000000000068
+      },
+      "Text": "Apretar la tuerca del husillo a 40 Nm en dos pasadas en cruz (20 Nm / 40 Nm) con la llave dinamométrica TW-03."
+    },
+    {
+      "Kind": "step",
+      "Page": 4,
+      "Box": {
+        "x": 72,
+        "y": 242.10199999999998,
+        "w": 320.3200000000001,
+        "h": 10.175000000000068
+      },
+      "Text": "Verificar el juego axial con reloj comparador (máx. 0,01 mm)."
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 5,
+      "Box": {
+        "x": 64,
+        "y": 58.53800000000001,
+        "w": 145.044,
+        "h": 8.325000000000045
+      },
+      "Text": "Calidad / Línea 2, CNC-07, CNC-08"
+    },
+    {
+      "Kind": "heading",
+      "Page": 5,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 89.488,
+        "h": 12.950000000000045
+      },
+      "Text": "5 Verificación"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 5,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 308.7260000000001,
+        "h": 10.175000000000068
+      },
+      "Text": "Registrar el par aplicado y el juego axial en el formulario F-007."
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 5,
+      "Box": {
+        "x": 72,
+        "y": 152.10199999999998,
+        "w": 316.0520000000001,
+        "h": 10.175000000000068
+      },
+      "Text": "Repetir la verificación tras 8 horas de funcionamiento (PNT-009)."
+    },
+    {
+      "Kind": "heading",
+      "Page": 6,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 76.24400000000003,
+        "h": 12.950000000000045
+      },
+      "Text": "6 Registros"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 6,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 243.3200000000001,
+        "h": 10.175000000000068
+      },
+      "Text": "F-007 Registro de intervención de mantenimiento."
+    },
+    {
+      "Kind": "heading",
+      "Page": 7,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 139.27199999999996,
+        "h": 12.950000000000045
+      },
+      "Text": "7 Responsabilidades"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 7,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 302.005,
+        "h": 10.175000000000068
+      },
+      "Text": "Técnico de mantenimiento: ejecuta. Calidad: revisa y archiva."
+    },
+    {
+      "Kind": "heading",
+      "Page": 8,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 161.06999999999994,
+        "h": 12.950000000000045
+      },
+      "Text": "8 Historial de revisiones"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 8,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 200.53000000000014,
+        "h": 28.175000000000068
+      },
+      "Text": "rev.1 2021-04-02 Edición inicial. rev.2 2023-06-02 Nuevo útil de montaje."
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 8,
+      "Box": {
+        "x": 72,
+        "y": 170.10199999999998,
+        "w": 262.2950000000001,
+        "h": 10.175000000000068
+      },
+      "Text": "rev.3 2025-03-12 Par de apriete actualizado a 40 Nm."
+    },
+    {
+      "Kind": "heading",
+      "Page": 9,
+      "Box": {
+        "x": 72,
+        "y": 101.94799999999998,
+        "w": 62.24400000000003,
+        "h": 12.950000000000045
+      },
+      "Text": "9 Anexos"
+    },
+    {
+      "Kind": "paragraph",
+      "Page": 9,
+      "Box": {
+        "x": 72,
+        "y": 134.10199999999998,
+        "w": 334.3890000000002,
+        "h": 10.175000000000068
+      },
+      "Text": "Anexo A: secuencia de apriete en cruz (ver plano DRW-CNC07-SP)."
+    }
+  ]
+}

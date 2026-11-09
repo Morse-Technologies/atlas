@@ -1,0 +1,30 @@
+{
+  "schema_name": "DoclingDocument",
+  "body": {
+    "children": [
+      { "$ref": "#/texts/0" },
+      { "$ref": "#/groups/0" },
+      { "$ref": "#/tables/0" },
+      { "$ref": "#/texts/3" },
+      { "$ref": "#/texts/4" },
+      { "$ref": "#/pictures/0" }
+    ]
+  },
+  "groups": [
+    { "label": "list", "children": [{ "$ref": "#/texts/1" }, { "$ref": "#/texts/2" }] }
+  ],
+  "texts": [
+    { "label": "section_header", "text": "Montaje del husillo",
+      "prov": [{ "page_no": 1, "bbox": { "l": 50, "t": 800, "r": 300, "b": 780, "coord_origin": "BOTTOMLEFT" } }] },
+    { "label": "list_item", "text": "Aflojar la tuerca.", "enumerated": true,
+      "prov": [{ "page_no": 1, "bbox": { "l": 60, "t": 760, "r": 400, "b": 745, "coord_origin": "BOTTOMLEFT" } }] },
+    { "label": "list_item", "text": "Retirar el husillo.", "enumerated": true, "prov": [] },
+    { "label": "page_footer", "text": "Página 1 de 9", "prov": [] },
+    { "label": "text", "text": "ADVERTENCIA: bloquear la energía antes de abrir.", "prov": [] }
+  ],
+  "tables": [
+    { "label": "table", "prov": [{ "page_no": 1, "bbox": { "l": 50, "t": 100, "r": 500, "b": 200, "coord_origin": "TOPLEFT" } }],
+      "data": { "grid": [[{ "text": "Elemento" }, { "text": "Par" }], [{ "text": "Tuerca" }, { "text": "40 Nm" }]] } }
+  ],
+  "pages": { "1": { "page_no": 1, "size": { "width": 595, "height": 842 } } }
+}
