@@ -1,0 +1,128 @@
+/*
+ * Atlas design tokens. One source of truth for colour, type, space, radius and motion.
+ * World: pipe-marking bands. The chrome is ink only; colour lives on bands and the main data element.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Grounds and surfaces */
+  --ground: #f2f4f7;      /* blue-grey plant ground */
+  --surface: #ffffff;     /* the working sheet */
+  --raised: #f7f8fa;      /* wells and panels inside the sheet */
+  --active: #e3e6ea;      /* nav pill, selected row */
+  --scrim: rgb(14 18 16 / 0.32);
+
+  /* Lines: card edge, row rule, control border */
+  --border: #e3e6ea;
+  --rule: #eef0f3;
+  --control: #cfd4da;
+
+  /* Ink: three tiers, every tier >= 4.5:1 on surface and ground */
+  --text: #0e1210;
+  --muted: #50565c;
+  --faint: #5f656b;
+
+  /* Actions and data */
+  --primary: #0e1210;
+  --on-primary: #ffffff;
+  --bar: #3c423f;
+  --bar-miss: #a6aca8;
+  --accent: #00665f;      /* main data element, focus, the one primary data mark */
+  --accent-soft: #dcecea;
+  --on-accent: #ffffff;
+
+  /* Source bands: a fixed four-colour code (white text >= 4.5:1 on each) */
+  --band-procedure: #3c7a52;
+  --band-manual: #2f6ea8;
+  --band-norm: #8f6a14;
+  --band-erp: #7a5a3a;
+
+  /* Status pairs (pale tint + dark ink of the same hue) */
+  --positive: #247b50;
+  --pill-positive-bg: #dcfae5;
+  --pill-positive-ink: #04250e;
+  --negative: #c4242a;
+  --pill-negative-bg: #ffedea;
+  --pill-negative-ink: #831c1e;
+  --pill-warning-bg: #fff7e0;
+  --pill-warning-ink: #7a4a05;
+  --pill-warning-line: #f1d48a;
+  --pill-neutral-bg: #eef0f3;
+  --pill-neutral-ink: #2b3036;
+
+  --grid: #e5e7ea;
+  --shadow-float: 0 8px 24px rgb(14 18 16 / 0.12), 0 2px 6px rgb(14 18 16 / 0.06);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0b0e0d;
+  --surface: #121614;
+  --raised: #181d1b;
+  --active: #232a27;
+  --scrim: rgb(0 0 0 / 0.55);
+  --border: #222926;
+  --rule: #1b211f;
+  --control: #3a433f;
+  --text: #eef1ef;
+  --muted: #b4bbb7;
+  --faint: #979e9a;
+  --primary: #eef1ef;
+  --on-primary: #0e1210;
+  --bar: #7b817d;
+  --bar-miss: #4a4f4c;
+  --accent: #4fb9ad;
+  --accent-soft: #15302d;
+  --on-accent: #06201d;
+  --positive: #4cc488;
+  --pill-positive-bg: #14291d;
+  --pill-positive-ink: #7fdcab;
+  --negative: #ef6b6f;
+  --pill-negative-bg: #2e1718;
+  --pill-negative-ink: #ff9c9a;
+  --pill-warning-bg: #2c2210;
+  --pill-warning-ink: #f2c66b;
+  --pill-warning-line: #5a4415;
+  --pill-neutral-bg: #1f2523;
+  --pill-neutral-ink: #d3d8d5;
+  --grid: #252c29;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #0b0e0d;
+    --surface: #121614;
+    --raised: #181d1b;
+    --active: #232a27;
+    --scrim: rgb(0 0 0 / 0.55);
+    --border: #222926;
+    --rule: #1b211f;
+    --control: #3a433f;
+    --text: #eef1ef;
+    --muted: #b4bbb7;
+    --faint: #979e9a;
+    --primary: #eef1ef;
+    --on-primary: #0e1210;
+    --bar: #7b817d;
+  --bar-miss: #4a4f4c;
+  --accent: #4fb9ad;
+    --accent-soft: #15302d;
+    --on-accent: #06201d;
+    --positive: #4cc488;
+    --pill-positive-bg: #14291d;
+    --pill-positive-ink: #7fdcab;
+    --negative: #ef6b6f;
+    --pill-negative-bg: #2e1718;
+    --pill-negative-ink: #ff9c9a;
+    --pill-warning-bg: #2c2210;
+    --pill-warning-ink: #f2c66b;
+    --pill-warning-line: #5a4415;
+    --pill-neutral-bg: #1f2523;
+    --pill-neutral-ink: #d3d8d5;
+    --grid: #252c29;
+    --shadow-float: 0 10px 30px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+  }
+}

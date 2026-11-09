@@ -1,0 +1,248 @@
+@import "tailwindcss";
+@import "../styles/tokens.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-active: var(--active);
+  --color-border: var(--border);
+  --color-rule: var(--rule);
+  --color-control: var(--control);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-band-procedure: var(--band-procedure);
+  --color-band-manual: var(--band-manual);
+  --color-band-norm: var(--band-norm);
+  --color-band-erp: var(--band-erp);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-grid: var(--grid);
+
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+
+  /* App type scale: 12 / 14 / 16 / 24 / 30 */
+  --text-small: 12px;
+  --text-small--line-height: 16px;
+  --text-body: 14px;
+  --text-body--line-height: 20px;
+  --text-section: 16px;
+  --text-section--line-height: 24px;
+  --text-title: 24px;
+  --text-title--line-height: 32px;
+  --text-kpi: 30px;
+  --text-kpi--line-height: 36px;
+
+  --radius-card: 8px;
+  --radius-control: 6px;
+  --radius-chip: 4px;
+
+  --shadow-float: var(--shadow-float);
+
+  /* Motion: exponential ease-out for enters, a balanced curve for moves, the drawer curve for sheets */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --default-transition-duration: 160ms;
+  --default-transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+
+  --animate-enter: enter 260ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-band-in: band-in 280ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-token-in: token-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+
+  @keyframes enter {
+    from { opacity: 0; transform: translateY(10px); }
+  }
+  @keyframes band-in {
+    from { opacity: 0; transform: translateX(14px); }
+  }
+  @keyframes halftone-in { to { opacity: 1; } }
+  @keyframes token-in {
+    from { opacity: 0; }
+  }
+  @keyframes bar-grow {
+    from { transform: scaleY(0); }
+  }
+  @keyframes bar-grow-x {
+    from { transform: scaleX(0); }
+  }
+  @keyframes bubble-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  }
+  @keyframes caret-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  @keyframes flow {
+    to { stroke-dashoffset: -18; }
+  }
+}
+
+:root {
+  /* The working area (everything inside the sheet, not the sidebar or top bar) renders at 95% from tablet up.
+     Full-height screens divide by this so they still fill the viewport exactly. */
+  --content-zoom: 1;
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+}
+
+@layer base {
+  html {
+    background: var(--ground);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 20px;
+    caret-color: var(--accent);
+  }
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  a {
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--control) transparent;
+  }
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  input::placeholder, textarea::placeholder {
+    color: var(--faint);
+    opacity: 1;
+  }
+}
+
+@media (min-width: 768px) {
+  :root { --content-zoom: 0.95; }
+}
+
+@utility content-zoom {
+  zoom: var(--content-zoom);
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A flowing pipe: the arrow segment nudges forward, slowly, like the flow arrows on pipe markers. */
+.pipe-flow [aria-hidden] svg { animation: pipe-nudge 1.6s var(--ease-in-out) infinite; }
+@keyframes pipe-nudge { 0%, 60%, 100% { transform: translateX(0); } 30% { transform: translateX(3px); } }
+
+/* Hit slop: small targets get a larger invisible hit area (at least 40px) without changing layout. */
+@utility hit-slop {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+}
+
+/* Continuous corners where supported (squircle); plain radii elsewhere. */
+@supports (corner-shape: squircle) {
+  .rounded-card, .rounded-control, [class*="rounded-[2"], [class*="rounded-full"]:not(.rounded-full) {
+    corner-shape: squircle;
+  }
+  .rounded-card { border-radius: 12px; }
+  .rounded-control { border-radius: 9px; }
+}
+
+/* Stagger helper: children animate in order of --i */
+@utility stagger {
+  & > * {
+    animation: var(--animate-enter);
+    animation-delay: calc(var(--i, 0) * 50ms);
+  }
+}
+
+/* Reduced motion: fewer and gentler, not zero. Keep fades that aid comprehension, drop travel and loops. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes enter { from { opacity: 0; } }
+  @keyframes band-in { from { opacity: 0; } }
+  @keyframes bar-grow { from { opacity: 0; } }
+  @keyframes bar-grow-x { from { opacity: 0; } }
+  *, *::before, *::after {
+    animation-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  [class*="animate-[flow"], .animate-pulse, .pipe-flow [aria-hidden] svg { animation: none !important; }
+  [class*="translate"], [class*="scale-"] { transition-property: opacity, background-color, color, border-color !important; }
+}
+
+/* Theme switch: the new theme is clipped in by script (View Transitions); no default crossfade. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Route change: the old screen fades out quickly, the new one rises in (React <ViewTransition>). */
+::view-transition-old(.page-exit) { animation: 120ms var(--ease-out) both vt-fade-out; }
+::view-transition-new(.page-enter) { animation: 220ms var(--ease-out) both vt-rise-in; }
+::view-transition-group(.morph) { animation-duration: 320ms; animation-timing-function: var(--ease-in-out); }
+@keyframes vt-fade-out { to { opacity: 0; } }
+@keyframes vt-rise-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}
+
+/* Animated icons: every lucide icon inside a control moves a little when the control is hovered or focused.
+   Transitions, not keyframes, so a quick in-and-out retargets instead of restarting. Pointer devices only. */
+@media (hover: hover) {
+  :is(a, button, [role="menuitem"], [role="tab"]) svg.lucide {
+    transition: transform var(--dur-2) var(--ease-out);
+  }
+  :where(a, button, [role="menuitem"], [role="tab"]):where(:hover, :focus-visible):where(:not(:disabled, [aria-disabled="true"])) svg.lucide {
+    /* default: a small lift for anything without its own motion */
+    transform: translateY(-1px) scale(1.08);
+  }
+  /* direction: arrows and chevrons lean the way they point */
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-arrow-right, .lucide-chevron-right, .lucide-log-in, .lucide-corner-down-left) { transform: translateX(3px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-arrow-left, .lucide-chevron-left, .lucide-log-out) { transform: translateX(-3px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-arrow-up, .lucide-upload) { transform: translateY(-3px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-arrow-down, .lucide-download) { transform: translateY(3px); }
+  /* turn: icons about change or settings */
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-refresh-cw) { transform: rotate(180deg); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-rotate-ccw, .lucide-history) { transform: rotate(-90deg); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-plus, .lucide-x, .lucide-layout-grid, .lucide-sun) { transform: rotate(90deg); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-moon) { transform: rotate(-20deg) scale(1.08); }
+  /* tilt: things you pick up or sign off */
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-thumbs-up) { transform: rotate(-12deg) translateY(-2px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-thumbs-down) { transform: rotate(12deg) translateY(2px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-pencil, .lucide-square-pen) { transform: rotate(-12deg) translate(1px, -1px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-trash-2) { transform: rotate(-8deg) scale(1.08); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-search) { transform: scale(1.12) translate(-1px, -1px); }
+  :is(a, button, [role="menuitem"]):is(:hover, :focus-visible) :is(.lucide-panel-left, .lucide-panel-left-close, .lucide-panel-left-open) { transform: scaleX(0.88); }
+  /* no motion where a chevron already rotates with state */
+  :is(button, [role="menuitem"]):is(:hover, :focus-visible) .lucide-chevron-down, :is(button, [role="menuitem"]):is(:hover, :focus-visible) .lucide-ellipsis { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(a, button, [role="menuitem"], [role="tab"]) svg.lucide { transition: none; transform: none !important; }
+}
