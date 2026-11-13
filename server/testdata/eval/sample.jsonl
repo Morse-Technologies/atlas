@@ -1,0 +1,6 @@
+{"question": "¿A cuántos Nm se aprieta la tuerca del husillo?", "expected": {"code": "PNT-014", "page": 4}}
+{"question": "¿Qué hay que usar antes de intervenir en el husillo, guantes y gafas?", "expected": {"code": "PNT-014", "page": 3}}
+{"question": "¿Qué formulario registra el par aplicado y el juego axial?", "expected": {"code": "PNT-014"}}
+{"question": "¿Qué responsabilidades tienen el técnico de mantenimiento y calidad?", "expected": {"code": "PNT-014", "page": 7}}
+{"question": "par de apriete actualizado a 40 Nm historial de revisiones rev.3", "expected": {"code": "PNT-014", "page": 8}}
+{"question": "qwertyuiop zxcvbnmk lkjhgfdsa", "expected": null}

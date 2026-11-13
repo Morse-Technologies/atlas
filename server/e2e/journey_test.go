@@ -20,6 +20,7 @@ const (
 	adminPassword = "a-long-password-1"
 	sourcePath    = "/sources/docs"
 	goldenPDF     = "../testdata/golden/PNT-014-rev3.pdf"
+	sampleSheet   = "../testdata/sample.xlsx"
 )
 
 // ingestTimeout is how long reading the sample folder may take; real models on a CPU need much longer.
@@ -31,14 +32,25 @@ type docJSON struct {
 	Title            string `json:"title"`
 	CurrentVersionID string `json:"current_version_id"`
 	Versions         []struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-		Pages int    `json:"pages"`
+		ID      string `json:"id"`
+		State   string `json:"state"`
+		Pages   int    `json:"pages"`
+		Preview bool   `json:"preview"`
 	} `json:"versions"`
 	Provenance []struct {
 		Field  string `json:"field"`
 		Source string `json:"source"`
 	} `json:"provenance"`
+}
+
+// provenanceOf says where the document's value for field came from ("" if no source is recorded).
+func (d docJSON) provenanceOf(field string) string {
+	for _, p := range d.Provenance {
+		if p.Field == field {
+			return p.Source
+		}
+	}
+	return ""
 }
 
 // journey holds what one step learns for the next.
@@ -72,6 +84,9 @@ func TestAtlasFromFirstSetupToAnAnswerWithItsCitation(t *testing.T) {
 		{"Pro features follow the license", j.proFollowsLicense},
 		{"the audit log records it all and its chain is intact", j.auditTrail},
 		{"the panel counts what happened", j.panel},
+		{"atlas eval measures the answers and stores nothing", j.evalMeasuresTheAnswers},
+		{"two people see only what they may read", j.twoPeopleSeeOnlyWhatTheyMayRead},
+		{"a spreadsheet has no preview and its original downloads", j.spreadsheetOriginal},
 		{"changing the password needs the current one and keeps this session", j.changePassword},
 		{"signing out ends the session", j.signOut},
 		{"a session cookie the server rejects is cleared", j.rejectedCookie},
@@ -111,7 +126,9 @@ func (j *journey) signIn(t *testing.T) {
 		ChallengeID string `json:"challenge_id"`
 		NeedsCode   bool   `json:"needs_code"`
 	}
-	expect(t, j.api.post("/auth/login", map[string]string{"email": adminEmail, "password": adminPassword}), http.StatusOK).json(t, &challenge)
+	loggedIn := expect(t, j.api.post("/auth/login", map[string]string{"email": adminEmail, "password": adminPassword}), http.StatusOK)
+	loggedIn.json(t, &challenge)
+	requireClocksAgree(t, loggedIn)
 	if !challenge.NeedsCode {
 		t.Fatal("an administrator always signs in with a second factor")
 	}
@@ -131,6 +148,22 @@ func (j *journey) signIn(t *testing.T) {
 	j.userID = me.ID
 	if len(me.Roles) != 1 || me.Roles[0] != "admin" {
 		t.Fatalf("roles = %v", me.Roles)
+	}
+}
+
+// maxClockSkew is half a second-factor step: beyond it the server refuses the code this machine computes, and the
+// failure looks like a wrong code. A Docker VM that slept can drift that far.
+const maxClockSkew = 15 * time.Second
+
+// requireClocksAgree stops with a plain message when the server's clock (its Date header) is far from this one.
+func requireClocksAgree(t *testing.T, r reply) {
+	t.Helper()
+	served, err := http.ParseTime(r.header.Get("Date"))
+	if err != nil {
+		return // no Date header: nothing to compare
+	}
+	if skew := time.Since(served).Abs(); skew > maxClockSkew {
+		t.Fatalf("the server's clock is %v away from this machine's: second-factor codes would be refused", skew)
 	}
 }
 
@@ -253,7 +286,7 @@ func (j *journey) conversation(t *testing.T) {
 func (j *journey) correctionSurvivesRescan(t *testing.T) {
 	var fixed docJSON
 	expect(t, j.api.patch("/documents/"+j.golden.ID+"/metadata", map[string]string{"title": "Montaje de husillo (corregido)"}), http.StatusOK).json(t, &fixed)
-	if fixed.Title != "Montaje de husillo (corregido)" || len(fixed.Provenance) != 1 || fixed.Provenance[0].Source != "manual" {
+	if fixed.Title != "Montaje de husillo (corregido)" || fixed.provenanceOf("title") != "manual" {
 		t.Fatalf("document = %+v", fixed)
 	}
 	var before []struct{ ID string }
@@ -319,22 +352,35 @@ func (j *journey) proIsLocked(t *testing.T) {
 	if lic.Plan != "core" || len(lic.Features) != 0 {
 		t.Fatalf("license = %+v", lic)
 	}
+	refused := j.api.do(request{method: http.MethodPut, path: "/system/license", body: map[string]string{"content": "not a license"}})
+	expect(t, refused, http.StatusUnprocessableEntity)
+	expect(t, j.api.get("/system/license"), http.StatusOK).json(t, &lic)
+	if lic.Plan != "core" {
+		t.Fatalf("a refused license changed the plan to %q", lic.Plan)
+	}
 }
 
 func (j *journey) auditTrail(t *testing.T) {
 	expect(t, j.api.get("/audit/events"), http.StatusForbidden) // an administrator is not an auditor
 	roles := map[string]any{"roles": []string{"admin", "auditor"}}
 	expect(t, j.api.patch("/users/"+j.userID+"/roles", roles), http.StatusOK)
+	pro := os.Getenv("ATLAS_E2E_EDITION") == "pro"
+	if pro {
+		j.signedReport(t)
+	}
 	var events []struct{ Action string }
 	expect(t, j.api.get("/audit/events?limit=200"), http.StatusOK).json(t, &events)
 	seen := map[string]bool{}
 	for _, e := range events {
 		seen[e.Action] = true
 	}
-	for _, want := range []string{"setup.completed", "user.login", "source.created", "answer.generated", "answer.feedback", "metadata.corrected", "settings.updated", "upload.received", "user.roles_changed"} {
+	for _, want := range []string{"setup.completed", "user.login", "source.created", "answer.generated", "answer.feedback", "metadata.corrected", "settings.updated", "upload.received", "user.roles_changed", "license.rejected"} {
 		if !seen[want] {
 			t.Errorf("the audit log has no %q event (has %v)", want, seen)
 		}
+	}
+	if pro && (!seen["audit.exported"] || !seen["license.installed"]) {
+		t.Errorf("the Pro steps left no audit.exported / license.installed event (has %v)", seen)
 	}
 	var v struct {
 		OK      bool `json:"ok"`
@@ -409,5 +455,39 @@ func (j *journey) restrictSource(t *testing.T) {
 	expect(t, patch(map[string]any{"access": "everyone"}), http.StatusOK).json(t, &src)
 	if src.Access != "everyone" || len(src.Readers) != 0 {
 		t.Fatalf("source = %+v", src)
+	}
+}
+
+// spreadsheetOriginal uploads a spreadsheet: the viewer cannot show it, so the version says so and the original is offered.
+func (j *journey) spreadsheetOriginal(t *testing.T) {
+	sheet, err := os.ReadFile(sampleSheet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploaded struct {
+		Accepted int `json:"accepted"`
+		Rejected []struct{ Name, Reason string }
+	}
+	expect(t, j.api.upload("plan-sheet.xlsx", sheet), http.StatusAccepted).json(t, &uploaded)
+	if uploaded.Accepted != 1 {
+		t.Fatalf("upload = %+v, want the spreadsheet accepted", uploaded)
+	}
+	var doc docJSON
+	eventually(t, ingestTimeout, "the spreadsheet to be indexed", func() bool {
+		for _, d := range j.indexed() {
+			if strings.HasSuffix(d.Path, "plan-sheet.xlsx") {
+				doc = d
+			}
+		}
+		return doc.ID != ""
+	})
+	if len(doc.Versions) != 1 || doc.Versions[0].Preview {
+		t.Fatalf("versions = %+v, want one without a preview", doc.Versions)
+	}
+	base := "/documents/" + doc.ID + "/versions/" + doc.CurrentVersionID
+	expect(t, j.api.get(base+"/file"), http.StatusNotFound)
+	original := expect(t, j.api.get(base+"/original"), http.StatusOK)
+	if !strings.HasPrefix(original.header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("Content-Disposition = %q, want an attachment", original.header.Get("Content-Disposition"))
 	}
 }
