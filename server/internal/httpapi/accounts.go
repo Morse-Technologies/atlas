@@ -26,8 +26,13 @@ type Accounts interface {
 	ChangePassword(ctx context.Context, p access.Principal, in access.PasswordChange) error
 	GetUser(ctx context.Context, p access.Principal, id uuid.UUID) (access.User, error)
 	ListUsers(ctx context.Context, p access.Principal, page access.Page) ([]access.User, uuid.UUID, error)
+	ListPeople(ctx context.Context, p access.Principal, page access.Page) ([]access.PersonName, uuid.UUID, error)
 	UpdateRoles(ctx context.Context, p access.Principal, change access.RoleChange) (access.User, error)
 	DeleteUser(ctx context.Context, p access.Principal, id uuid.UUID) error
+	CreateUser(ctx context.Context, by access.By, in access.NewUser) (access.Credentials, error)
+	ResetPassword(ctx context.Context, by access.By, userID uuid.UUID) (access.Credentials, error)
+	ResetTOTP(ctx context.Context, by access.By, userID uuid.UUID) (access.Credentials, error)
+	OrgName(ctx context.Context, p access.Principal) (string, error)
 	Settings(ctx context.Context, p access.Principal) (access.Settings, error)
 	UpdateSettings(ctx context.Context, p access.Principal, patch access.SettingsPatch) (access.Settings, error)
 }
@@ -80,14 +85,18 @@ func (s *Server) Logout(ctx context.Context, _ LogoutRequestObject) (LogoutRespo
 	return Logout204Response{Headers: Logout204ResponseHeaders{SetCookie: &cookie}}, nil
 }
 
-// GetMe returns the signed-in person.
+// GetMe returns the signed-in person with the name of their organization.
 func (s *Server) GetMe(ctx context.Context, _ GetMeRequestObject) (GetMeResponseObject, error) {
 	p := principalFrom(ctx)
 	user, err := s.Accounts.GetUser(ctx, p, p.UserID)
 	if err != nil {
 		return nil, err
 	}
-	return GetMe200JSONResponse(toPerson(user)), nil
+	org, err := s.Accounts.OrgName(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return GetMe200JSONResponse(toMe(toPerson(user), org)), nil
 }
 
 // DeleteMe erases the signed-in account.
@@ -116,6 +125,69 @@ func (s *Server) ListUsers(ctx context.Context, req ListUsersRequestObject) (Lis
 	return ListUsers200JSONResponse{Body: people, Headers: ListUsers200ResponseHeaders{NextCursor: cursorOf(next)}}, nil
 }
 
+// ListPeople returns one page of active people by name, for any signed-in person.
+func (s *Server) ListPeople(ctx context.Context, req ListPeopleRequestObject) (ListPeopleResponseObject, error) {
+	page, err := pageFrom(req.Params.Limit, req.Params.Cursor)
+	if err != nil {
+		return nil, err
+	}
+	names, next, err := s.Accounts.ListPeople(ctx, principalFrom(ctx), page)
+	if err != nil {
+		return nil, err
+	}
+	people := make([]PersonName, len(names))
+	for i, n := range names {
+		people[i] = toPersonName(n)
+	}
+	return ListPeople200JSONResponse{Body: people, Headers: ListPeople200ResponseHeaders{NextCursor: cursorOf(next)}}, nil
+}
+
+// adminBy is the administrator behind the request, as account administration names them.
+func adminBy(p access.Principal) access.By {
+	return access.By{TenantID: p.TenantID, ActorID: p.UserID}
+}
+
+// CreateUser adds an account and returns its one-time secrets, which exist only in this answer.
+func (s *Server) CreateUser(ctx context.Context, req CreateUserRequestObject) (CreateUserResponseObject, error) {
+	p := principalFrom(ctx)
+	b := req.Body
+	in := access.NewUser{Name: b.Name, Email: b.Email, Roles: toRoles(b.Roles), WithoutTOTP: !b.SecondFactor}
+	creds, err := s.Accounts.CreateUser(ctx, adminBy(p), in)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.Accounts.GetUser(ctx, p, creds.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return CreateUser201JSONResponse{Person: toPerson(user), Password: creds.Password, TotpUri: nilIfEmpty(creds.TOTPURI)}, nil
+}
+
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// ResetUserPassword gives the account a new one-time password. It is in this answer only.
+func (s *Server) ResetUserPassword(ctx context.Context, req ResetUserPasswordRequestObject) (ResetUserPasswordResponseObject, error) {
+	creds, err := s.Accounts.ResetPassword(ctx, adminBy(principalFrom(ctx)), req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return ResetUserPassword200JSONResponse{Password: creds.Password}, nil
+}
+
+// ResetUserTotp gives the account a new second factor. The authenticator link is in this answer only.
+func (s *Server) ResetUserTotp(ctx context.Context, req ResetUserTotpRequestObject) (ResetUserTotpResponseObject, error) {
+	creds, err := s.Accounts.ResetTOTP(ctx, adminBy(principalFrom(ctx)), req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return ResetUserTotp200JSONResponse{TotpUri: creds.TOTPURI}, nil
+}
+
 // DeleteUser erases an account.
 func (s *Server) DeleteUser(ctx context.Context, req DeleteUserRequestObject) (DeleteUserResponseObject, error) {
 	if err := s.Accounts.DeleteUser(ctx, principalFrom(ctx), req.Id); err != nil {
@@ -126,15 +198,23 @@ func (s *Server) DeleteUser(ctx context.Context, req DeleteUserRequestObject) (D
 
 // UpdateRoles replaces the roles of an account.
 func (s *Server) UpdateRoles(ctx context.Context, req UpdateRolesRequestObject) (UpdateRolesResponseObject, error) {
-	roles := make([]access.Role, len(req.Body.Roles))
-	for i, r := range req.Body.Roles {
-		roles[i] = access.Role(r)
-	}
-	user, err := s.Accounts.UpdateRoles(ctx, principalFrom(ctx), access.RoleChange{UserID: req.Id, Roles: roles})
+	user, err := s.Accounts.UpdateRoles(ctx, principalFrom(ctx), access.RoleChange{UserID: req.Id, Roles: toRoles(req.Body.Roles)})
 	if err != nil {
 		return nil, err
 	}
 	return UpdateRoles200JSONResponse(toPerson(user)), nil
+}
+
+func toRoles(roles []Role) []access.Role {
+	out := make([]access.Role, len(roles))
+	for i, r := range roles {
+		out[i] = access.Role(r)
+	}
+	return out
+}
+
+func toPersonName(n access.PersonName) PersonName {
+	return PersonName{Id: n.ID, Name: n.Name}
 }
 
 func toPerson(u access.User) Person {
@@ -143,7 +223,12 @@ func toPerson(u access.User) Person {
 		roles[i] = Role(r)
 	}
 	return Person{Id: u.ID, Name: u.Name, Email: u.Email, Department: u.Department, Roles: roles,
-		IsActive: u.IsActive, LastActiveAt: u.LastActiveAt, Hue: u.Hue}
+		IsActive: u.IsActive, LastActiveAt: u.LastActiveAt, Hue: u.Hue, MustChangePassword: u.MustChangePassword}
+}
+
+func toMe(p Person, orgName string) Me {
+	return Me{Id: p.Id, Name: p.Name, Email: p.Email, Department: p.Department, Roles: p.Roles, IsActive: p.IsActive,
+		LastActiveAt: p.LastActiveAt, Hue: p.Hue, MustChangePassword: p.MustChangePassword, OrgName: orgName}
 }
 
 // pageSize clamps the requested page size to the contract.

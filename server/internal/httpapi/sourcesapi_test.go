@@ -33,7 +33,8 @@ func (f *fakeSources) Resume(context.Context, sources.Actor, uuid.UUID) (sources
 }
 
 func (f *fakeSources) Scans(context.Context, sources.Actor, sources.Page) ([]sources.Scan, uuid.UUID, error) {
-	return []sources.Scan{{ID: uuid.New(), StartedAt: time.Now(), FinishedAt: time.Now(), Discovered: 10, Changed: 3, Failed: 1}}, uuid.Nil, nil
+	finished := time.Now()
+	return []sources.Scan{{ID: uuid.New(), StartedAt: time.Now(), FinishedAt: &finished, Discovered: 10, Changed: 3, Failed: 1}}, uuid.Nil, nil
 }
 
 // adminRequest is a JSON request from the signed-in administrator.
@@ -110,5 +111,12 @@ func TestCheckFolderAcceptsAReadableDirectoryInsideTheRoots(t *testing.T) {
 func TestCheckFolderRefusesPathsOutsideTheRoots(t *testing.T) {
 	if rec := checkRequest(t, t.TempDir(), t.TempDir()); !strings.Contains(rec.Body.String(), `"ok":false`) {
 		t.Fatalf("a folder outside the allowed roots must not pass: %s", rec.Body)
+	}
+}
+
+func TestARunningScanHasNoFinishTime(t *testing.T) {
+	run := toRun(sources.Scan{ID: uuid.New(), StartedAt: time.Now()})
+	if run.FinishedAt != nil {
+		t.Fatalf("finished at %v, want none while the scan runs", run.FinishedAt)
 	}
 }

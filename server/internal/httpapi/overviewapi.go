@@ -21,11 +21,11 @@ type overviewJSON struct {
 		MedianLatencyMs int `json:"median_latency_ms"`
 	} `json:"today"`
 	Week      []weekDayJSON `json:"week"`
-	TopTopics []struct{}    `json:"top_topics"`
 	Documents struct {
 		Indexed     int            `json:"indexed"`
 		ByBand      map[string]int `json:"by_band"`
 		Processing  int            `json:"processing"`
+		Retrying    int            `json:"retrying"`
 		Quarantined int            `json:"quarantined"`
 	} `json:"documents"`
 	OpenAlerts struct {
@@ -42,7 +42,7 @@ type weekDayJSON struct {
 	NotFound  int    `json:"not_found"`
 }
 
-// GetOverview returns the numbers of the panel. Top topics stay empty until questions are classified by topic.
+// GetOverview returns the numbers of the panel.
 func (s *Server) GetOverview(ctx context.Context, _ GetOverviewRequestObject) (GetOverviewResponseObject, error) {
 	p, err := s.Panel.Panel(ctx, db.Scope{Tenant: principalFrom(ctx).TenantID, User: principalFrom(ctx).UserID})
 	if err != nil {
@@ -59,8 +59,8 @@ func panelJSON(p overview.Panel) overviewJSON {
 	for i, d := range p.Week {
 		o.Week[i] = weekDayJSON{Day: d.Day.Format(time.DateOnly), Questions: d.Questions, NotFound: d.NotFound}
 	}
-	o.TopTopics = []struct{}{}
-	o.Documents.Indexed, o.Documents.ByBand, o.Documents.Processing, o.Documents.Quarantined = p.Documents.Indexed, p.Documents.ByBand, p.Documents.Processing, p.Documents.Quarantined
+	o.Documents.Indexed, o.Documents.ByBand, o.Documents.Processing = p.Documents.Indexed, p.Documents.ByBand, p.Documents.Processing
+	o.Documents.Retrying, o.Documents.Quarantined = p.Documents.Retrying, p.Documents.Quarantined
 	o.OpenAlerts.High, o.OpenAlerts.Medium, o.OpenAlerts.Low = p.OpenAlerts["high"], p.OpenAlerts["medium"], p.OpenAlerts["low"]
 	o.Finding = p.Finding
 	return o

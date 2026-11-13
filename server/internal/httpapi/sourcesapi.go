@@ -17,6 +17,8 @@ type SourceAdmin interface {
 	Pause(ctx context.Context, who sources.Actor, id uuid.UUID) (sources.Source, error)
 	Resume(ctx context.Context, who sources.Actor, id uuid.UUID) (sources.Source, error)
 	Sync(ctx context.Context, who sources.Actor, id uuid.UUID) error
+	Remove(ctx context.Context, who sources.Actor, id uuid.UUID) error
+	DeleteUpload(ctx context.Context, who sources.Actor, file sources.UploadedFile) error
 	Scans(ctx context.Context, who sources.Actor, page sources.Page) ([]sources.Scan, uuid.UUID, error)
 	Quarantine(ctx context.Context, who sources.Actor, page sources.Page) ([]sources.QuarantinedFile, uuid.UUID, error)
 	RetryQuarantine(ctx context.Context, who sources.Actor, id uuid.UUID) error
@@ -105,6 +107,14 @@ func (s *Server) changeReaders(ctx context.Context, who sources.Actor, req Updat
 	return s.Sources.SetReaders(ctx, who, change)
 }
 
+// RemoveSource stops reading a folder source and retires its documents.
+func (s *Server) RemoveSource(ctx context.Context, req RemoveSourceRequestObject) (RemoveSourceResponseObject, error) {
+	if err := s.Sources.Remove(ctx, actorOf(ctx), req.Id); err != nil {
+		return nil, err
+	}
+	return RemoveSource204Response{}, nil
+}
+
 // SyncSource asks for a scan now; progress shows up in the runs list.
 func (s *Server) SyncSource(ctx context.Context, req SyncSourceRequestObject) (SyncSourceResponseObject, error) {
 	if err := s.Sources.Sync(ctx, actorOf(ctx), req.Id); err != nil {
@@ -179,8 +189,7 @@ func readersOf(s sources.Source) []uuid.UUID {
 
 // toRun maps a scan to the run the UI shows. Files not changed are "skipped": the scan listed them and found nothing to do.
 func toRun(sc sources.Scan) IngestionRun {
-	finished := sc.FinishedAt
-	return IngestionRun{Id: sc.ID, SourceId: sc.SourceID, StartedAt: sc.StartedAt, FinishedAt: &finished,
+	return IngestionRun{Id: sc.ID, SourceId: sc.SourceID, StartedAt: sc.StartedAt, FinishedAt: sc.FinishedAt,
 		Discovered: sc.Discovered, Indexed: sc.Changed, Skipped: max(sc.Discovered-sc.Changed, 0), Failed: sc.Failed}
 }
 

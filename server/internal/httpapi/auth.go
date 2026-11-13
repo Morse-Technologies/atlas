@@ -19,6 +19,10 @@ const (
 	uploadTimeout  = 15 * time.Minute
 )
 
+// passwordChangeAllowed are the only operations open to a person who must still replace a password that
+// someone else set: they can see who they are, change it, sign out and read the license (the shell needs it).
+var passwordChangeAllowed = map[string]bool{"GetMe": true, "ChangeMyPassword": true, "Logout": true, "GetLicense": true}
+
 type principalKey struct{}
 
 // principalFrom returns who the request acts as. Handlers behind authenticate always have one.
@@ -91,7 +95,7 @@ func (s *Server) authenticate(reqs map[string]requirement) StrictMiddlewareFunc 
 			if err != nil {
 				return nil, err
 			}
-			if !known || !req.allows(p) || !s.hasFeature(req.feature) {
+			if !known || !req.allows(p) || !s.hasFeature(req.feature) || mustChangePasswordFirst(p, operationID) {
 				return nil, errs.ErrForbidden
 			}
 			ctx = context.WithValue(context.WithValue(ctx, principalKey{}, p), requestKey{}, r)
@@ -100,9 +104,13 @@ func (s *Server) authenticate(reqs map[string]requirement) StrictMiddlewareFunc 
 	}
 }
 
+func mustChangePasswordFirst(p access.Principal, operationID string) bool {
+	return p.MustChangePassword && !passwordChangeAllowed[operationID]
+}
+
 // extendForUpload gives an upload the time a slow link needs; the server-wide read timeout is for small requests.
 func extendForUpload(w http.ResponseWriter, operationID string) {
-	if operationID == "uploadFiles" {
+	if operationID == "UploadFiles" {
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadTimeout))
 	}
 }

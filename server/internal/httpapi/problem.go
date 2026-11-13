@@ -12,23 +12,22 @@ import (
 
 const problemContentType = "application/problem+json"
 
-// ErrNotImplemented answers operations of the contract that later parts of the plan build.
-var ErrNotImplemented = errors.New("not implemented yet")
-
 // errNothingToChange answers a PATCH that names no field.
 var errNothingToChange = errors.Join(errs.ErrInvalid, errors.New("no field to change"))
 
-// ProblemFor translates an error into RFC 9457 Problem Details. It is the only place that does so;
-// internal error text is never sent, only the status title.
+// ProblemFor translates an error into RFC 9457 Problem Details. It is the only place that does so; internal error
+// text is never sent, only the status title and, for an errs.Public error, the reason its module wrote for the caller.
 func ProblemFor(err error) Problem {
 	status := statusFor(err)
-	return Problem{Type: "about:blank", Title: http.StatusText(status), Status: status}
+	problem := Problem{Type: "about:blank", Title: http.StatusText(status), Status: status}
+	if detail := errs.PublicDetail(err); detail != "" {
+		problem.Detail = &detail
+	}
+	return problem
 }
 
 func statusFor(err error) int {
 	switch {
-	case errors.Is(err, ErrNotImplemented):
-		return http.StatusNotImplemented
 	case errors.Is(err, errs.ErrUnauthenticated):
 		return http.StatusUnauthorized
 	case errors.Is(err, errs.ErrNotFound):
@@ -39,6 +38,8 @@ func statusFor(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, errs.ErrInvalid):
 		return http.StatusUnprocessableEntity
+	case isTooManyRequests(err):
+		return http.StatusTooManyRequests
 	case errs.Classify(err) == errs.ClassTransient:
 		return http.StatusServiceUnavailable
 	default:
@@ -57,7 +58,8 @@ func writeProblem(w http.ResponseWriter, p Problem) {
 func handleResponseError(w http.ResponseWriter, r *http.Request, err error) {
 	p := ProblemFor(err)
 	forgetRejectedSession(w, r, err)
-	if p.Status >= http.StatusInternalServerError && p.Status != http.StatusNotImplemented {
+	setRetryAfter(w, err)
+	if p.Status >= http.StatusInternalServerError {
 		slog.ErrorContext(r.Context(), "request failed", "path", r.URL.Path, log.Err(err))
 	}
 	writeProblem(w, p)

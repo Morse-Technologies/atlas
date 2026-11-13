@@ -6,6 +6,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/morse/atlas/server/internal/platform/metrics"
 )
 
 // probeTimeout bounds each readiness check so /readyz answers even when a dependency hangs.
@@ -19,22 +21,26 @@ type Check struct {
 	Probe func(context.Context) error
 }
 
-// Server implements the strict server interface. Operations not built yet are in unimplemented.go.
+// Server implements the strict server interface. Every operation of the contract has a handler.
 type Server struct {
-	Checks        []Check
-	Version       string
-	SchemaVersion int64
-	Accounts      Accounts
-	Audit         AuditLog
-	Sources       SourceAdmin
-	Documents     DocumentLibrary
-	Taxonomy      Taxonomy
-	Idempotency   IdempotencyStore
-	Answers       Answers
-	Licenses      LicenseSource
-	Graph         GraphView
-	Panel         PanelSource
-	Deployment    Deployment
+	Checks          []Check
+	Version         string
+	SchemaVersion   int64
+	Accounts        Accounts
+	Audit           AuditLog
+	Signing         SigningKeys
+	Sources         SourceAdmin
+	Documents       DocumentLibrary
+	SearchLanguages SearchLanguages
+	Taxonomy        Taxonomy
+	Idempotency     IdempotencyStore
+	Answers         Answers
+	Licenses        LicenseSource
+	Graph           GraphView
+	Panel           PanelSource
+	Deployment      Deployment
+	Metrics         *metrics.Registry // nil: the calls are not measured
+	AnswerMode      string            // reported by /readyz; a degraded mode is not "not ready"
 }
 
 // NewHandler returns the HTTP handler for the whole contract.
@@ -43,11 +49,18 @@ func NewHandler(s *Server) http.Handler {
 	if err != nil {
 		panic(err) // the embedded contract is wrong: a build-time fault, caught by the tests
 	}
-	strict := NewStrictHandlerWithOptions(s, []StrictMiddlewareFunc{s.authenticate(reqs)}, StrictHTTPServerOptions{
+	// The last middleware runs first: it names the operation for the metrics, authenticate puts the person in the
+	// context, then the limiter counts.
+	limiter := newLimiter(time.Now)
+	strict := NewStrictHandlerWithOptions(s, []StrictMiddlewareFunc{limiter.middleware(), s.authenticate(reqs), recordOperation}, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  handleRequestError,
 		ResponseErrorHandlerFunc: handleResponseError,
 	})
-	return sameOrigin(s.idempotent(HandlerWithOptions(strict, StdHTTPServerOptions{ErrorHandlerFunc: handleRequestError})))
+	handler := sameOrigin(s.idempotent(HandlerWithOptions(strict, StdHTTPServerOptions{ErrorHandlerFunc: handleRequestError})))
+	if s.Metrics == nil {
+		return handler
+	}
+	return measured(s.Metrics, handler)
 }
 
 // GetHealthz answers as long as the process runs.
@@ -58,10 +71,19 @@ func (s *Server) GetHealthz(context.Context, GetHealthzRequestObject) (GetHealth
 // GetReadyz probes every dependency and reports each one.
 func (s *Server) GetReadyz(ctx context.Context, _ GetReadyzRequestObject) (GetReadyzResponseObject, error) {
 	results, healthy := s.probeAll(ctx)
+	mode := s.readinessAnswerMode()
 	if !healthy {
-		return GetReadyz503JSONResponse{Status: ReadinessStatusDegraded, Checks: results}, nil
+		return GetReadyz503JSONResponse{Status: ReadinessStatusDegraded, Checks: results, AnswerMode: mode}, nil
 	}
-	return GetReadyz200JSONResponse{Status: ReadinessStatusOk, Checks: results}, nil
+	return GetReadyz200JSONResponse{Status: ReadinessStatusOk, Checks: results, AnswerMode: mode}, nil
+}
+
+func (s *Server) readinessAnswerMode() *ReadinessAnswerMode {
+	if s.AnswerMode == "" {
+		return nil
+	}
+	mode := ReadinessAnswerMode(s.AnswerMode)
+	return &mode
 }
 
 func (s *Server) probeAll(ctx context.Context) (map[string]string, bool) {

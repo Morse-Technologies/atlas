@@ -127,3 +127,19 @@ func TestRequestsWithoutAKeyAreNotRecorded(t *testing.T) {
 		t.Fatalf("pauses %d, want 2", c.pauses)
 	}
 }
+
+func TestAnswersWithSecretsAreNeverKeptForReplay(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/api/v1/users":                    true,
+		"/api/v1/users/abc/password-reset": true,
+		"/api/v1/users/abc/totp-reset":     true,
+		"/api/v1/users/abc/roles":          false,
+		"/api/v1/sources":                  false,
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Idempotency-Key", "k")
+		if got := !wantsIdempotency(req); got != want {
+			t.Errorf("%s: replay disabled = %v, want %v", path, got, want)
+		}
+	}
+}

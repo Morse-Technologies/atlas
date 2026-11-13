@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"mime"
 	"net/http"
 	"path"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/morse/atlas/server/internal/catalog"
 	"github.com/morse/atlas/server/internal/documents"
+	"github.com/morse/atlas/server/internal/graph"
+	"github.com/morse/atlas/server/internal/platform/errs"
+	"github.com/morse/atlas/server/internal/sources"
 )
 
 // DocumentLibrary is what the HTTP layer needs from the documents module. *documents.Library implements it.
@@ -20,6 +24,7 @@ type DocumentLibrary interface {
 	Get(ctx context.Context, who documents.Actor, id uuid.UUID) (documents.Document, error)
 	Correct(ctx context.Context, who documents.Actor, c documents.Correction) (documents.Document, error)
 	OpenFile(ctx context.Context, who documents.Actor, req documents.FileRequest) (documents.ViewerFile, error)
+	OpenOriginal(ctx context.Context, who documents.Actor, req documents.FileRequest) (documents.ViewerFile, error)
 }
 
 // Taxonomy is what the HTTP layer needs from the catalog module. *catalog.Service implements it.
@@ -69,13 +74,73 @@ func (s *Server) GetDocument(ctx context.Context, req GetDocumentRequestObject) 
 	return GetDocument200JSONResponse(docs[0]), nil
 }
 
-// ListRelated returns documents linked to this one. Links come from the graph module, which is not built
-// yet, so the answer is an empty list for a document that exists.
+// DeleteDocument deletes a document that came from an upload. The person must be able to see it (404 otherwise);
+// a document of a folder source is refused with 409 by the sources module.
+func (s *Server) DeleteDocument(ctx context.Context, req DeleteDocumentRequestObject) (DeleteDocumentResponseObject, error) {
+	doc, err := s.Documents.Get(ctx, documentActor(ctx), req.Id)
+	if err != nil {
+		return nil, err
+	}
+	file := sources.UploadedFile{SourceID: doc.SourceID, ExternalID: doc.Path, DocumentID: doc.ID}
+	if err := s.Sources.DeleteUpload(ctx, actorOf(ctx), file); err != nil {
+		return nil, err
+	}
+	return DeleteDocument204Response{}, nil
+}
+
+// ListRelated returns the documents linked to this one by a reference or as a duplicate. Each is loaded as the
+// person, so one they cannot read is left out as if it did not exist.
 func (s *Server) ListRelated(ctx context.Context, req ListRelatedRequestObject) (ListRelatedResponseObject, error) {
 	if _, err := s.Documents.Get(ctx, documentActor(ctx), req.Id); err != nil {
 		return nil, err
 	}
-	return ListRelated200JSONResponse([]Related{}), nil
+	if s.Graph == nil {
+		return ListRelated200JSONResponse([]Related{}), nil
+	}
+	links, err := s.Graph.RelatedTo(ctx, graphActor(ctx), req.Id)
+	if err != nil {
+		return nil, err
+	}
+	related, err := s.readableRelated(ctx, links)
+	if err != nil {
+		return nil, err
+	}
+	return ListRelated200JSONResponse(related), nil
+}
+
+// readableRelated loads the linked documents the person can read, each with what it names.
+func (s *Server) readableRelated(ctx context.Context, links []graph.Link) ([]Related, error) {
+	related, err := s.loadRelated(ctx, links)
+	if err != nil {
+		return nil, err
+	}
+	docs := make([]Document, len(related))
+	for i, r := range related {
+		docs[i] = r.Document
+	}
+	if err := s.fillEntities(ctx, docs); err != nil {
+		return nil, err
+	}
+	for i := range related {
+		related[i].Document = docs[i]
+	}
+	return related, nil
+}
+
+// loadRelated reads each linked document as the person and leaves out the ones they cannot see.
+func (s *Server) loadRelated(ctx context.Context, links []graph.Link) ([]Related, error) {
+	related := []Related{}
+	for _, link := range links {
+		doc, err := s.Documents.Get(ctx, documentActor(ctx), link.DocumentID)
+		if errors.Is(err, errs.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		related = append(related, Related{Document: toDocumentJSON(doc), Via: EdgeKind(link.Kind)})
+	}
+	return related, nil
 }
 
 // CorrectMetadata applies a manual correction; it survives re-indexing.
@@ -98,7 +163,17 @@ func (s *Server) GetVersionFile(ctx context.Context, req GetVersionFileRequestOb
 		return nil, err
 	}
 	r, _ := ctx.Value(requestKey{}).(*http.Request)
-	return pdfResponse{file: file, request: r}, nil
+	return fileResponse{file: file, request: r, disposition: "inline", suffix: ".pdf"}, nil
+}
+
+// GetVersionOriginal sends the file as it was read, to be saved rather than shown.
+func (s *Server) GetVersionOriginal(ctx context.Context, req GetVersionOriginalRequestObject) (GetVersionOriginalResponseObject, error) {
+	file, err := s.Documents.OpenOriginal(ctx, documentActor(ctx), documents.FileRequest{DocumentID: req.Id, VersionID: req.VersionId})
+	if err != nil {
+		return nil, err
+	}
+	r, _ := ctx.Value(requestKey{}).(*http.Request)
+	return fileResponse{file: file, request: r, disposition: "attachment"}, nil
 }
 
 // GetCatalog returns the tenant's document and entity types.
@@ -124,19 +199,26 @@ func (s *Server) GetCatalog(ctx context.Context, _ GetCatalogRequestObject) (Get
 	return GetCatalog200JSONResponse(out), nil
 }
 
-// pdfResponse serves the file itself so Range, If-Modified-Since and the content length work.
-type pdfResponse struct {
-	file    documents.ViewerFile
-	request *http.Request
+// fileResponse serves the file itself so Range, If-Modified-Since and the content length work. The viewer's PDF
+// is "inline" and gets .pdf added to its name; an original is an "attachment" under its own name.
+type fileResponse struct {
+	file        documents.ViewerFile
+	request     *http.Request
+	disposition string
+	suffix      string
 }
 
-func (p pdfResponse) VisitGetVersionFileResponse(w http.ResponseWriter) error {
-	defer func() { _ = p.file.Close() }()
-	w.Header().Set("Content-Type", "application/pdf")
+func (f fileResponse) VisitGetVersionFileResponse(w http.ResponseWriter) error { return f.serve(w) }
+
+func (f fileResponse) VisitGetVersionOriginalResponse(w http.ResponseWriter) error { return f.serve(w) }
+
+func (f fileResponse) serve(w http.ResponseWriter) error {
+	defer func() { _ = f.file.Close() }()
+	w.Header().Set("Content-Type", f.file.Mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, no-cache")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": path.Base(p.file.Name) + ".pdf"}))
-	http.ServeContent(w, p.request, p.file.Name, p.file.ModTime, p.file)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(f.disposition, map[string]string{"filename": path.Base(f.file.Name) + f.suffix}))
+	http.ServeContent(w, f.request, f.file.Name, f.file.ModTime, f.file)
 	return nil
 }
 
@@ -160,14 +242,14 @@ func toPatch(b *MetadataPatch) documents.MetadataPatch {
 }
 
 func toDocumentJSON(d documents.Document) Document {
-	out := Document{Id: d.ID, SourceId: d.SourceID, CurrentVersionId: d.CurrentVersionID, Code: d.Code, Title: d.Title,
+	out := Document{Id: d.ID, SourceId: d.SourceID, SourceKind: DocumentSourceKind(d.SourceKind), CurrentVersionId: d.CurrentVersionID, Code: d.Code, Title: d.Title,
 		DocType: d.DocType, Band: BandKind(d.Band), Status: DocStatus(d.Status), Department: d.Department, Path: d.Path,
 		Language: d.Language, Summary: d.Summary, OwnerId: d.OwnerID, Attributes: d.Attributes,
 		ApprovedAt: dateOf(d.ApprovedAt), ReviewDueAt: dateOf(d.ReviewDueAt),
 		Entities: []EntityRef{}, Versions: []DocumentVersion{}, Provenance: []FieldProvenance{}}
 	for _, v := range d.Versions {
 		out.Versions = append(out.Versions, DocumentVersion{Id: v.ID, Revision: v.Revision,
-			State: DocumentVersionState(v.State), IndexedAt: v.IndexedAt, Pages: v.Pages})
+			State: DocumentVersionState(v.State), IndexedAt: v.IndexedAt, Pages: v.Pages, Preview: v.Preview})
 	}
 	for _, p := range d.Provenance {
 		out.Provenance = append(out.Provenance, FieldProvenance{Field: p.Field, Value: p.Value,

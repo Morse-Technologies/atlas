@@ -17,6 +17,7 @@ type GraphView interface {
 	Alerts(ctx context.Context, who graph.Actor, page graph.AlertPage) ([]graph.Alert, uuid.UUID, error)
 	UpdateAlert(ctx context.Context, who graph.Actor, c graph.AlertChange) (graph.Alert, error)
 	DecideEdge(ctx context.Context, who graph.Actor, d graph.Decision) error
+	RelatedTo(ctx context.Context, who graph.Actor, document uuid.UUID) ([]graph.Link, error)
 	EntitiesOf(ctx context.Context, tenant uuid.UUID, documents []uuid.UUID) (map[uuid.UUID][]graph.Entity, error)
 }
 

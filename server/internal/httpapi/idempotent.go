@@ -18,6 +18,7 @@ const (
 	// maxIdempotentBody bounds what is read to fingerprint a request, and what is kept as the answer.
 	maxIdempotentBody = 1 << 20
 	askPath           = "/api/v1/ask"
+	usersPath         = "/api/v1/users"
 )
 
 // IdempotencyStore is what the HTTP layer needs from platform/idempotency. *idempotency.Store implements it.
@@ -28,8 +29,8 @@ type IdempotencyStore interface {
 }
 
 // idempotent replays the first answer to a write that is retried with the same Idempotency-Key.
-// It does nothing for reads, for requests without a key, for uploads (the body is a file stream) and for /ask
-// (the answer is a stream, and every question is its own audit record).
+// It does nothing for reads, for requests without a key, for uploads (the body is a file stream), for /ask
+// (the answer is a stream, and every question is its own audit record) and for answers that carry secrets.
 func (s *Server) idempotent(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.Idempotency == nil || !wantsIdempotency(r) {
@@ -47,7 +48,13 @@ func (s *Server) idempotent(next http.Handler) http.Handler {
 
 func wantsIdempotency(r *http.Request) bool {
 	return r.Header.Get(idempotencyHeader) != "" && !isSafeMethod(r.Method) && r.URL.Path != askPath &&
-		!strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/")
+		!answersWithSecrets(r) && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/")
+}
+
+// answersWithSecrets: one-time passwords and keys must never be kept in the table that replays answers.
+func answersWithSecrets(r *http.Request) bool {
+	path := r.URL.Path
+	return path == usersPath || strings.HasSuffix(path, "/password-reset") || strings.HasSuffix(path, "/totp-reset")
 }
 
 // once is the handler to run at most once for a key.

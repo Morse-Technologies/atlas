@@ -260,11 +260,30 @@ func (e DocStatus) Valid() bool {
 	}
 }
 
+// Defines values for DocumentSourceKind.
+const (
+	DocumentSourceKindFolder DocumentSourceKind = "folder"
+	DocumentSourceKindUpload DocumentSourceKind = "upload"
+)
+
+// Valid indicates whether the value is a known member of the DocumentSourceKind enum.
+func (e DocumentSourceKind) Valid() bool {
+	switch e {
+	case DocumentSourceKindFolder:
+		return true
+	case DocumentSourceKindUpload:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DocumentVersionState.
 const (
 	Indexed     DocumentVersionState = "indexed"
 	Processing  DocumentVersionState = "processing"
 	Quarantined DocumentVersionState = "quarantined"
+	Retrying    DocumentVersionState = "retrying"
 	Superseded  DocumentVersionState = "superseded"
 )
 
@@ -276,6 +295,8 @@ func (e DocumentVersionState) Valid() bool {
 	case Processing:
 		return true
 	case Quarantined:
+		return true
+	case Retrying:
 		return true
 	case Superseded:
 		return true
@@ -541,11 +562,12 @@ func (e Outcome) Valid() bool {
 
 // Defines values for QuarantineItemReason.
 const (
-	Corrupt     QuarantineItemReason = "corrupt"
-	Encrypted   QuarantineItemReason = "encrypted"
-	Hostile     QuarantineItemReason = "hostile"
-	TooLarge    QuarantineItemReason = "too_large"
-	Unsupported QuarantineItemReason = "unsupported"
+	Corrupt          QuarantineItemReason = "corrupt"
+	Encrypted        QuarantineItemReason = "encrypted"
+	Hostile          QuarantineItemReason = "hostile"
+	RetriesExhausted QuarantineItemReason = "retries_exhausted"
+	TooLarge         QuarantineItemReason = "too_large"
+	Unsupported      QuarantineItemReason = "unsupported"
 )
 
 // Valid indicates whether the value is a known member of the QuarantineItemReason enum.
@@ -557,9 +579,32 @@ func (e QuarantineItemReason) Valid() bool {
 		return true
 	case Hostile:
 		return true
+	case RetriesExhausted:
+		return true
 	case TooLarge:
 		return true
 	case Unsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReadinessAnswerMode.
+const (
+	ReadinessAnswerModeGenerated ReadinessAnswerMode = "generated"
+	ReadinessAnswerModeKeyword   ReadinessAnswerMode = "keyword"
+	ReadinessAnswerModePassages  ReadinessAnswerMode = "passages"
+)
+
+// Valid indicates whether the value is a known member of the ReadinessAnswerMode enum.
+func (e ReadinessAnswerMode) Valid() bool {
+	switch e {
+	case ReadinessAnswerModeGenerated:
+		return true
+	case ReadinessAnswerModeKeyword:
+		return true
+	case ReadinessAnswerModePassages:
 		return true
 	default:
 		return false
@@ -635,6 +680,48 @@ func (e SettingsAnswerLanguage) Valid() bool {
 	}
 }
 
+// Defines values for SettingsAnswerMode.
+const (
+	SettingsAnswerModeGenerated SettingsAnswerMode = "generated"
+	SettingsAnswerModeKeyword   SettingsAnswerMode = "keyword"
+	SettingsAnswerModePassages  SettingsAnswerMode = "passages"
+)
+
+// Valid indicates whether the value is a known member of the SettingsAnswerMode enum.
+func (e SettingsAnswerMode) Valid() bool {
+	switch e {
+	case SettingsAnswerModeGenerated:
+		return true
+	case SettingsAnswerModeKeyword:
+		return true
+	case SettingsAnswerModePassages:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsSearchLanguage.
+const (
+	SettingsSearchLanguageEn   SettingsSearchLanguage = "en"
+	SettingsSearchLanguageEs   SettingsSearchLanguage = "es"
+	SettingsSearchLanguageNone SettingsSearchLanguage = "none"
+)
+
+// Valid indicates whether the value is a known member of the SettingsSearchLanguage enum.
+func (e SettingsSearchLanguage) Valid() bool {
+	switch e {
+	case SettingsSearchLanguageEn:
+		return true
+	case SettingsSearchLanguageEs:
+		return true
+	case SettingsSearchLanguageNone:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SettingsPatchAnswerLanguage.
 const (
 	SettingsPatchAnswerLanguageEn   SettingsPatchAnswerLanguage = "en"
@@ -650,6 +737,42 @@ func (e SettingsPatchAnswerLanguage) Valid() bool {
 	case SettingsPatchAnswerLanguageEs:
 		return true
 	case SettingsPatchAnswerLanguageUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsPatchSearchLanguage.
+const (
+	SettingsPatchSearchLanguageEn   SettingsPatchSearchLanguage = "en"
+	SettingsPatchSearchLanguageEs   SettingsPatchSearchLanguage = "es"
+	SettingsPatchSearchLanguageNone SettingsPatchSearchLanguage = "none"
+)
+
+// Valid indicates whether the value is a known member of the SettingsPatchSearchLanguage enum.
+func (e SettingsPatchSearchLanguage) Valid() bool {
+	switch e {
+	case SettingsPatchSearchLanguageEn:
+		return true
+	case SettingsPatchSearchLanguageEs:
+		return true
+	case SettingsPatchSearchLanguageNone:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SigningKeyAlgorithm.
+const (
+	Ed25519phSha512 SigningKeyAlgorithm = "ed25519ph-sha512"
+)
+
+// Valid indicates whether the value is a known member of the SigningKeyAlgorithm enum.
+func (e SigningKeyAlgorithm) Valid() bool {
+	switch e {
+	case Ed25519phSha512:
 		return true
 	default:
 		return false
@@ -1036,19 +1159,28 @@ type Document struct {
 	Provenance  []FieldProvenance   `json:"provenance"`
 	ReviewDueAt *openapi_types.Date `json:"review_due_at"`
 	SourceId    openapi_types.UUID  `json:"source_id"`
-	Status      DocStatus           `json:"status"`
-	Summary     string              `json:"summary"`
-	Title       string              `json:"title"`
-	Versions    []DocumentVersion   `json:"versions"`
+
+	// SourceKind Where the document came from; only uploads can be deleted
+	SourceKind DocumentSourceKind `json:"source_kind"`
+	Status     DocStatus          `json:"status"`
+	Summary    string             `json:"summary"`
+	Title      string             `json:"title"`
+	Versions   []DocumentVersion  `json:"versions"`
 }
+
+// DocumentSourceKind Where the document came from; only uploads can be deleted
+type DocumentSourceKind string
 
 // DocumentVersion defines model for DocumentVersion.
 type DocumentVersion struct {
-	Id        openapi_types.UUID   `json:"id"`
-	IndexedAt time.Time            `json:"indexed_at"`
-	Pages     int                  `json:"pages"`
-	Revision  string               `json:"revision"`
-	State     DocumentVersionState `json:"state"`
+	Id        openapi_types.UUID `json:"id"`
+	IndexedAt time.Time          `json:"indexed_at"`
+	Pages     int                `json:"pages"`
+
+	// Preview True when the viewer can show this version (a PDF, or a format rendered to PDF)
+	Preview  bool                 `json:"preview"`
+	Revision string               `json:"revision"`
+	State    DocumentVersionState `json:"state"`
 }
 
 // DocumentVersionState defines model for DocumentVersion.State.
@@ -1166,6 +1298,12 @@ type LicenseFeatures string
 // LicensePlan defines model for License.Plan.
 type LicensePlan string
 
+// LicenseInstall defines model for LicenseInstall.
+type LicenseInstall struct {
+	// Content The text of the license file
+	Content string `json:"content"`
+}
+
 // LoginChallenge defines model for LoginChallenge.
 type LoginChallenge struct {
 	ChallengeId string `json:"challenge_id"`
@@ -1176,6 +1314,24 @@ type LoginChallenge struct {
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+// Me defines model for Me.
+type Me struct {
+	Department   string             `json:"department"`
+	Email        string             `json:"email"`
+	Hue          int                `json:"hue"`
+	Id           openapi_types.UUID `json:"id"`
+	IsActive     bool               `json:"is_active"`
+	LastActiveAt *time.Time         `json:"last_active_at"`
+
+	// MustChangePassword The password was set by someone else; only changing it is allowed until then
+	MustChangePassword bool   `json:"must_change_password"`
+	Name               string `json:"name"`
+
+	// OrgName Name of the person's organization, as set in Settings
+	OrgName string `json:"org_name"`
+	Roles   []Role `json:"roles"`
 }
 
 // MetadataPatch Fields a person corrects by hand; each change is recorded with source `manual`.
@@ -1202,6 +1358,9 @@ type Overview struct {
 		Indexed     int            `json:"indexed"`
 		Processing  int            `json:"processing"`
 		Quarantined int            `json:"quarantined"`
+
+		// Retrying Versions whose last step failed and will be tried again.
+		Retrying int `json:"retrying"`
 	} `json:"documents"`
 	Finding    string `json:"finding"`
 	OpenAlerts struct {
@@ -1215,10 +1374,6 @@ type Overview struct {
 		NotFound        int `json:"not_found"`
 		Questions       int `json:"questions"`
 	} `json:"today"`
-	TopTopics []struct {
-		Count int    `json:"count"`
-		Topic string `json:"topic"`
-	} `json:"top_topics"`
 	Week []struct {
 		Day       openapi_types.Date `json:"day"`
 		NotFound  int                `json:"not_found"`
@@ -1232,6 +1387,12 @@ type PasswordChange struct {
 	NewPassword     string `json:"new_password"`
 }
 
+// PasswordReset defines model for PasswordReset.
+type PasswordReset struct {
+	// Password One-time password, shown once
+	Password string `json:"password"`
+}
+
 // Person defines model for Person.
 type Person struct {
 	Department   string             `json:"department"`
@@ -1240,8 +1401,17 @@ type Person struct {
 	Id           openapi_types.UUID `json:"id"`
 	IsActive     bool               `json:"is_active"`
 	LastActiveAt *time.Time         `json:"last_active_at"`
-	Name         string             `json:"name"`
-	Roles        []Role             `json:"roles"`
+
+	// MustChangePassword The password was set by someone else; only changing it is allowed until then
+	MustChangePassword bool   `json:"must_change_password"`
+	Name               string `json:"name"`
+	Roles              []Role `json:"roles"`
+}
+
+// PersonName defines model for PersonName.
+type PersonName struct {
+	Id   openapi_types.UUID `json:"id"`
+	Name string             `json:"name"`
 }
 
 // Problem defines model for Problem.
@@ -1269,9 +1439,14 @@ type QuarantineItemReason string
 
 // Readiness defines model for Readiness.
 type Readiness struct {
-	Checks map[string]string `json:"checks"`
-	Status ReadinessStatus   `json:"status"`
+	// AnswerMode What a question gets with the models installed. A degraded mode does not make the installation not ready.
+	AnswerMode *ReadinessAnswerMode `json:"answer_mode,omitempty"`
+	Checks     map[string]string    `json:"checks"`
+	Status     ReadinessStatus      `json:"status"`
 }
+
+// ReadinessAnswerMode What a question gets with the models installed. A degraded mode does not make the installation not ready.
+type ReadinessAnswerMode string
 
 // ReadinessStatus defines model for Readiness.Status.
 type ReadinessStatus string
@@ -1300,20 +1475,34 @@ type RolesUpdate struct {
 
 // Settings defines model for Settings.
 type Settings struct {
-	AnswerLanguage     SettingsAnswerLanguage `json:"answer_language"`
-	ChatModel          string                 `json:"chat_model"`
-	EmbedModel         string                 `json:"embed_model"`
-	NetworkIsolated    bool                   `json:"network_isolated"`
-	NotFoundThreshold  float32                `json:"not_found_threshold"`
-	OrgName            string                 `json:"org_name"`
-	RequireCitation    bool                   `json:"require_citation"`
-	RerankModel        string                 `json:"rerank_model"`
-	RetentionDays      int                    `json:"retention_days"`
+	// AnswerGaps Read-only. Why the mode is not better: one fixed sentence per missing or mismatched model.
+	AnswerGaps     []string               `json:"answer_gaps"`
+	AnswerLanguage SettingsAnswerLanguage `json:"answer_language"`
+
+	// AnswerMode Read-only (SettingsPatch cannot change it). generated: written answers with citations. passages: no model writes, the best passages are listed, found by words and meaning. keyword: passages found by words only.
+	AnswerMode        SettingsAnswerMode `json:"answer_mode"`
+	ChatModel         string             `json:"chat_model"`
+	EmbedModel        string             `json:"embed_model"`
+	NetworkIsolated   bool               `json:"network_isolated"`
+	NotFoundThreshold float32            `json:"not_found_threshold"`
+	OrgName           string             `json:"org_name"`
+	RequireCitation   bool               `json:"require_citation"`
+	RerankModel       string             `json:"rerank_model"`
+	RetentionDays     int                `json:"retention_days"`
+
+	// SearchLanguage Language of the word search: stems and no accents (es, en), or no stems but no accents either (none).
+	SearchLanguage     SettingsSearchLanguage `json:"search_language"`
 	WarnContradictions bool                   `json:"warn_contradictions"`
 }
 
 // SettingsAnswerLanguage defines model for Settings.AnswerLanguage.
 type SettingsAnswerLanguage string
+
+// SettingsAnswerMode Read-only (SettingsPatch cannot change it). generated: written answers with citations. passages: no model writes, the best passages are listed, found by words and meaning. keyword: passages found by words only.
+type SettingsAnswerMode string
+
+// SettingsSearchLanguage Language of the word search: stems and no accents (es, en), or no stems but no accents either (none).
+type SettingsSearchLanguage string
 
 // SettingsPatch defines model for SettingsPatch.
 type SettingsPatch struct {
@@ -1322,11 +1511,15 @@ type SettingsPatch struct {
 	OrgName            *string                      `json:"org_name,omitempty"`
 	RequireCitation    *bool                        `json:"require_citation,omitempty"`
 	RetentionDays      *int                         `json:"retention_days,omitempty"`
+	SearchLanguage     *SettingsPatchSearchLanguage `json:"search_language,omitempty"`
 	WarnContradictions *bool                        `json:"warn_contradictions,omitempty"`
 }
 
 // SettingsPatchAnswerLanguage defines model for SettingsPatch.AnswerLanguage.
 type SettingsPatchAnswerLanguage string
+
+// SettingsPatchSearchLanguage defines model for SettingsPatch.SearchLanguage.
+type SettingsPatchSearchLanguage string
 
 // SetupRequest defines model for SetupRequest.
 type SetupRequest struct {
@@ -1347,6 +1540,18 @@ type SetupResponse struct {
 type SetupStatus struct {
 	SetupDone bool `json:"setup_done"`
 }
+
+// SigningKey defines model for SigningKey.
+type SigningKey struct {
+	Algorithm SigningKeyAlgorithm `json:"algorithm"`
+	KeyId     string              `json:"key_id"`
+
+	// PublicKey base64 of the 32-byte Ed25519 public key
+	PublicKey string `json:"public_key"`
+}
+
+// SigningKeyAlgorithm defines model for SigningKey.Algorithm.
+type SigningKeyAlgorithm string
 
 // Source defines model for Source.
 type Source struct {
@@ -1396,6 +1601,12 @@ type SourcePatch struct {
 // SourcePatchAccess defines model for SourcePatch.Access.
 type SourcePatchAccess string
 
+// TotpReset defines model for TotpReset.
+type TotpReset struct {
+	// TotpUri Authenticator-app link, shown once
+	TotpUri string `json:"totp_uri"`
+}
+
 // UploadResult defines model for UploadResult.
 type UploadResult struct {
 	Accepted int `json:"accepted"`
@@ -1403,6 +1614,26 @@ type UploadResult struct {
 		Name   string `json:"name"`
 		Reason string `json:"reason"`
 	} `json:"rejected"`
+}
+
+// UserCreate defines model for UserCreate.
+type UserCreate struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Roles []Role `json:"roles"`
+
+	// SecondFactor Required (true) when a role is admin, auditor or curator
+	SecondFactor bool `json:"second_factor"`
+}
+
+// UserCreated defines model for UserCreated.
+type UserCreated struct {
+	// Password One-time password, shown once
+	Password string `json:"password"`
+	Person   Person `json:"person"`
+
+	// TotpUri Authenticator-app link, shown once; null without a second factor
+	TotpUri *string `json:"totp_uri"`
 }
 
 // VerifyRequest defines model for VerifyRequest.
@@ -1496,6 +1727,11 @@ type ListDocumentsParamsBand string
 // ListDocumentsParamsStatus defines parameters for ListDocuments.
 type ListDocumentsParamsStatus string
 
+// DeleteDocumentParams defines parameters for DeleteDocument.
+type DeleteDocumentParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // CorrectMetadataParams defines parameters for CorrectMetadata.
 type CorrectMetadataParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -1543,6 +1779,14 @@ type ChangeMyPasswordParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// ListPeopleParams defines parameters for ListPeople.
+type ListPeopleParams struct {
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque; from the previous page's Next-Cursor header
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // UpdateSettingsParams defines parameters for UpdateSettings.
 type UpdateSettingsParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -1558,6 +1802,11 @@ type CreateSourceParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// RemoveSourceParams defines parameters for RemoveSource.
+type RemoveSourceParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // UpdateSourceParams defines parameters for UpdateSource.
 type UpdateSourceParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -1565,6 +1814,11 @@ type UpdateSourceParams struct {
 
 // SyncSourceParams defines parameters for SyncSource.
 type SyncSourceParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// InstallLicenseParams defines parameters for InstallLicense.
+type InstallLicenseParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
@@ -1635,8 +1889,14 @@ type CheckFolderJSONRequestBody = FolderCheckRequest
 // UpdateSourceJSONRequestBody defines body for UpdateSource for application/json ContentType.
 type UpdateSourceJSONRequestBody = SourcePatch
 
+// InstallLicenseJSONRequestBody defines body for InstallLicense for application/json ContentType.
+type InstallLicenseJSONRequestBody = LicenseInstall
+
 // UploadFilesMultipartRequestBody defines body for UploadFiles for multipart/form-data ContentType.
 type UploadFilesMultipartRequestBody UploadFilesMultipartBody
+
+// CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
+type CreateUserJSONRequestBody = UserCreate
 
 // UpdateRolesJSONRequestBody defines body for UpdateRoles for application/json ContentType.
 type UpdateRolesJSONRequestBody = RolesUpdate
@@ -1859,6 +2119,9 @@ type ServerInterface interface {
 	// (GET /api/v1/documents)
 	ListDocuments(w http.ResponseWriter, r *http.Request, params ListDocumentsParams)
 
+	// (DELETE /api/v1/documents/{id})
+	DeleteDocument(w http.ResponseWriter, r *http.Request, id Id, params DeleteDocumentParams)
+
 	// (GET /api/v1/documents/{id})
 	GetDocument(w http.ResponseWriter, r *http.Request, id Id)
 
@@ -1870,6 +2133,9 @@ type ServerInterface interface {
 	// GetVersionFile The file to view (PDF), after the ACL check; supports Range
 	// (GET /api/v1/documents/{id}/versions/{version_id}/file)
 	GetVersionFile(w http.ResponseWriter, r *http.Request, id Id, versionId openapi_types.UUID)
+	// GetVersionOriginal The file as it was read, to download, after the ACL check
+	// (GET /api/v1/documents/{id}/versions/{version_id}/original)
+	GetVersionOriginal(w http.ResponseWriter, r *http.Request, id Id, versionId openapi_types.UUID)
 	// DecideEdge Confirm or reject a suggested link
 	// (PATCH /api/v1/graph/edges/{id})
 	DecideEdge(w http.ResponseWriter, r *http.Request, id string, params DecideEdgeParams)
@@ -1895,6 +2161,9 @@ type ServerInterface interface {
 	// (PUT /api/v1/me/password)
 	ChangeMyPassword(w http.ResponseWriter, r *http.Request, params ChangeMyPasswordParams)
 
+	// (GET /api/v1/people)
+	ListPeople(w http.ResponseWriter, r *http.Request, params ListPeopleParams)
+
 	// (GET /api/v1/settings)
 	GetSettings(w http.ResponseWriter, r *http.Request)
 
@@ -1916,6 +2185,9 @@ type ServerInterface interface {
 	// (POST /api/v1/sources/check)
 	CheckFolder(w http.ResponseWriter, r *http.Request)
 
+	// (DELETE /api/v1/sources/{id})
+	RemoveSource(w http.ResponseWriter, r *http.Request, id Id, params RemoveSourceParams)
+
 	// (PATCH /api/v1/sources/{id})
 	UpdateSource(w http.ResponseWriter, r *http.Request, id Id, params UpdateSourceParams)
 
@@ -1927,6 +2199,12 @@ type ServerInterface interface {
 
 	// (GET /api/v1/system/license)
 	GetLicense(w http.ResponseWriter, r *http.Request)
+
+	// (PUT /api/v1/system/license)
+	InstallLicense(w http.ResponseWriter, r *http.Request, params InstallLicenseParams)
+	// GetSigningKey The public key that checks the signature of exported audit reports
+	// (GET /api/v1/system/signing-key)
+	GetSigningKey(w http.ResponseWriter, r *http.Request)
 	// UploadFiles Add files to the built-in `upload` source; they enter the normal ingestion pipeline
 	// (POST /api/v1/uploads)
 	UploadFiles(w http.ResponseWriter, r *http.Request, params UploadFilesParams)
@@ -1934,11 +2212,20 @@ type ServerInterface interface {
 	// (GET /api/v1/users)
 	ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams)
 
+	// (POST /api/v1/users)
+	CreateUser(w http.ResponseWriter, r *http.Request)
+
 	// (DELETE /api/v1/users/{id})
 	DeleteUser(w http.ResponseWriter, r *http.Request, id Id, params DeleteUserParams)
 
+	// (POST /api/v1/users/{id}/password-reset)
+	ResetUserPassword(w http.ResponseWriter, r *http.Request, id Id)
+
 	// (PATCH /api/v1/users/{id}/roles)
 	UpdateRoles(w http.ResponseWriter, r *http.Request, id Id, params UpdateRolesParams)
+
+	// (POST /api/v1/users/{id}/totp-reset)
+	ResetUserTotp(w http.ResponseWriter, r *http.Request, id Id)
 	// GetHealthz Process is alive
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -2491,6 +2778,56 @@ func (siw *ServerInterfaceWrapper) ListDocuments(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteDocument operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDocument(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id Id
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteDocumentParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteDocument(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetDocument operation middleware
 func (siw *ServerInterfaceWrapper) GetDocument(w http.ResponseWriter, r *http.Request) {
 
@@ -2619,6 +2956,41 @@ func (siw *ServerInterfaceWrapper) GetVersionFile(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetVersionFile(w, r, id, versionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetVersionOriginal operation middleware
+func (siw *ServerInterfaceWrapper) GetVersionOriginal(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id Id
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "version_id" -------------
+	var versionId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "version_id", r.PathValue("version_id"), &versionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetVersionOriginal(w, r, id, versionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2962,6 +3334,52 @@ func (siw *ServerInterfaceWrapper) ChangeMyPassword(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ListPeople operation middleware
+func (siw *ServerInterfaceWrapper) ListPeople(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPeopleParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPeople(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSettings operation middleware
 func (siw *ServerInterfaceWrapper) GetSettings(w http.ResponseWriter, r *http.Request) {
 
@@ -3141,6 +3559,56 @@ func (siw *ServerInterfaceWrapper) CheckFolder(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// RemoveSource operation middleware
+func (siw *ServerInterfaceWrapper) RemoveSource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id Id
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RemoveSourceParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveSource(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateSource operation middleware
 func (siw *ServerInterfaceWrapper) UpdateSource(w http.ResponseWriter, r *http.Request) {
 
@@ -3269,6 +3737,61 @@ func (siw *ServerInterfaceWrapper) GetLicense(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// InstallLicense operation middleware
+func (siw *ServerInterfaceWrapper) InstallLicense(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params InstallLicenseParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallLicense(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSigningKey operation middleware
+func (siw *ServerInterfaceWrapper) GetSigningKey(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSigningKey(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UploadFiles operation middleware
 func (siw *ServerInterfaceWrapper) UploadFiles(w http.ResponseWriter, r *http.Request) {
 
@@ -3356,6 +3879,20 @@ func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// CreateUser operation middleware
+func (siw *ServerInterfaceWrapper) CreateUser(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateUser(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DeleteUser operation middleware
 func (siw *ServerInterfaceWrapper) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
@@ -3406,6 +3943,32 @@ func (siw *ServerInterfaceWrapper) DeleteUser(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ResetUserPassword operation middleware
+func (siw *ServerInterfaceWrapper) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id Id
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetUserPassword(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateRoles operation middleware
 func (siw *ServerInterfaceWrapper) UpdateRoles(w http.ResponseWriter, r *http.Request) {
 
@@ -3447,6 +4010,32 @@ func (siw *ServerInterfaceWrapper) UpdateRoles(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateRoles(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResetUserTotp operation middleware
+func (siw *ServerInterfaceWrapper) ResetUserTotp(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id Id
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetUserTotp(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3635,15 +4224,18 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/conversations/{id}", wrapper.GetConversation)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/answers/{id}/feedback", wrapper.SendFeedback)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/documents", wrapper.ListDocuments)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/documents/{id}", wrapper.DeleteDocument)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/documents/{id}", wrapper.GetDocument)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/documents/{id}/related", wrapper.ListRelated)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/documents/{id}/metadata", wrapper.CorrectMetadata)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/documents/{id}/versions/{version_id}/file", wrapper.GetVersionFile)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/documents/{id}/versions/{version_id}/original", wrapper.GetVersionOriginal)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/catalog", wrapper.GetCatalog)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/sources", wrapper.ListSources)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/sources", wrapper.CreateSource)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/sources/check", wrapper.CheckFolder)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/uploads", wrapper.UploadFiles)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/sources/{id}", wrapper.RemoveSource)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/sources/{id}", wrapper.UpdateSource)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/sources/{id}/sync", wrapper.SyncSource)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/ingestion/runs", wrapper.ListRuns)
@@ -3656,12 +4248,18 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/audit/export", wrapper.ExportAudit)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/audit/events", wrapper.ListAuditEvents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/audit/verify", wrapper.VerifyAudit)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people", wrapper.ListPeople)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/users", wrapper.ListUsers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/users", wrapper.CreateUser)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/users/{id}", wrapper.DeleteUser)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/users/{id}/roles", wrapper.UpdateRoles)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/users/{id}/password-reset", wrapper.ResetUserPassword)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/users/{id}/totp-reset", wrapper.ResetUserTotp)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/settings", wrapper.GetSettings)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/settings", wrapper.UpdateSettings)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/system/signing-key", wrapper.GetSigningKey)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/system/license", wrapper.GetLicense)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/system/license", wrapper.InstallLicense)
 
 	return m
 }
@@ -3919,8 +4517,15 @@ type ExportAuditResponseObject interface {
 	VisitExportAuditResponse(w http.ResponseWriter) error
 }
 
+type ExportAudit200ResponseHeaders struct {
+	AtlasSignature      string
+	AtlasSignatureKeyId string
+	ContentDisposition  string
+}
+
 type ExportAudit200ApplicationxNdjsonResponse struct {
 	Body          io.Reader
+	Headers       ExportAudit200ResponseHeaders
 	ContentLength int64
 }
 
@@ -3930,6 +4535,9 @@ func (response ExportAudit200ApplicationxNdjsonResponse) VisitExportAuditRespons
 	if response.ContentLength != 0 {
 		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
 	}
+	w.Header().Set("Atlas-Signature", fmt.Sprint(response.Headers.AtlasSignature))
+	w.Header().Set("Atlas-Signature-Key-Id", fmt.Sprint(response.Headers.AtlasSignatureKeyId))
+	w.Header().Set("Content-Disposition", fmt.Sprint(response.Headers.ContentDisposition))
 	w.WriteHeader(200)
 
 	if closer, ok := response.Body.(io.ReadCloser); ok {
@@ -3964,6 +4572,7 @@ func (response ExportAudit200ApplicationxNdjsonResponse) VisitExportAuditRespons
 
 type ExportAudit200TextcsvResponse struct {
 	Body          io.Reader
+	Headers       ExportAudit200ResponseHeaders
 	ContentLength int64
 }
 
@@ -3973,6 +4582,9 @@ func (response ExportAudit200TextcsvResponse) VisitExportAuditResponse(w http.Re
 	if response.ContentLength != 0 {
 		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
 	}
+	w.Header().Set("Atlas-Signature", fmt.Sprint(response.Headers.AtlasSignature))
+	w.Header().Set("Atlas-Signature-Key-Id", fmt.Sprint(response.Headers.AtlasSignatureKeyId))
+	w.Header().Set("Content-Disposition", fmt.Sprint(response.Headers.ContentDisposition))
 	w.WriteHeader(200)
 
 	if closer, ok := response.Body.(io.ReadCloser); ok {
@@ -4332,6 +4944,40 @@ func (response ListDocumentsdefaultApplicationProblemPlusJSONResponse) VisitList
 	return err
 }
 
+type DeleteDocumentRequestObject struct {
+	Id     Id `json:"id"`
+	Params DeleteDocumentParams
+}
+
+type DeleteDocumentResponseObject interface {
+	VisitDeleteDocumentResponse(w http.ResponseWriter) error
+}
+
+type DeleteDocument204Response struct {
+}
+
+func (response DeleteDocument204Response) VisitDeleteDocumentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteDocumentdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteDocumentdefaultApplicationProblemPlusJSONResponse) VisitDeleteDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetDocumentRequestObject struct {
 	Id Id `json:"id"`
 }
@@ -4506,6 +5152,52 @@ type GetVersionFiledefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetVersionFiledefaultApplicationProblemPlusJSONResponse) VisitGetVersionFileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVersionOriginalRequestObject struct {
+	Id        Id                 `json:"id"`
+	VersionId openapi_types.UUID `json:"version_id"`
+}
+
+type GetVersionOriginalResponseObject interface {
+	VisitGetVersionOriginalResponse(w http.ResponseWriter) error
+}
+
+type GetVersionOriginal200ApplicationoctetStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetVersionOriginal200ApplicationoctetStreamResponse) VisitGetVersionOriginalResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetVersionOriginaldefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetVersionOriginaldefaultApplicationProblemPlusJSONResponse) VisitGetVersionOriginalResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -4763,7 +5455,7 @@ type GetMeResponseObject interface {
 	VisitGetMeResponse(w http.ResponseWriter) error
 }
 
-type GetMe200JSONResponse Person
+type GetMe200JSONResponse Me
 
 func (response GetMe200JSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
 
@@ -4817,6 +5509,55 @@ type ChangeMyPassworddefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ChangeMyPassworddefaultApplicationProblemPlusJSONResponse) VisitChangeMyPasswordResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPeopleRequestObject struct {
+	Params ListPeopleParams
+}
+
+type ListPeopleResponseObject interface {
+	VisitListPeopleResponse(w http.ResponseWriter) error
+}
+
+type ListPeople200ResponseHeaders struct {
+	NextCursor *string
+}
+
+type ListPeople200JSONResponse struct {
+	Body    []PersonName
+	Headers ListPeople200ResponseHeaders
+}
+
+func (response ListPeople200JSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.NextCursor != nil {
+		w.Header().Set("Next-Cursor", fmt.Sprint(*response.Headers.NextCursor))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPeopledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListPeopledefaultApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -5084,6 +5825,40 @@ func (response CheckFolderdefaultApplicationProblemPlusJSONResponse) VisitCheckF
 	return err
 }
 
+type RemoveSourceRequestObject struct {
+	Id     Id `json:"id"`
+	Params RemoveSourceParams
+}
+
+type RemoveSourceResponseObject interface {
+	VisitRemoveSourceResponse(w http.ResponseWriter) error
+}
+
+type RemoveSource204Response struct {
+}
+
+func (response RemoveSource204Response) VisitRemoveSourceResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RemoveSourcedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RemoveSourcedefaultApplicationProblemPlusJSONResponse) VisitRemoveSourceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UpdateSourceRequestObject struct {
 	Id     Id `json:"id"`
 	Params UpdateSourceParams
@@ -5235,6 +6010,84 @@ func (response GetLicensedefaultApplicationProblemPlusJSONResponse) VisitGetLice
 	return err
 }
 
+type InstallLicenseRequestObject struct {
+	Params InstallLicenseParams
+	Body   *InstallLicenseJSONRequestBody
+}
+
+type InstallLicenseResponseObject interface {
+	VisitInstallLicenseResponse(w http.ResponseWriter) error
+}
+
+type InstallLicense200JSONResponse License
+
+func (response InstallLicense200JSONResponse) VisitInstallLicenseResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallLicensedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response InstallLicensedefaultApplicationProblemPlusJSONResponse) VisitInstallLicenseResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSigningKeyRequestObject struct {
+}
+
+type GetSigningKeyResponseObject interface {
+	VisitGetSigningKeyResponse(w http.ResponseWriter) error
+}
+
+type GetSigningKey200JSONResponse SigningKey
+
+func (response GetSigningKey200JSONResponse) VisitGetSigningKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSigningKeydefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetSigningKeydefaultApplicationProblemPlusJSONResponse) VisitGetSigningKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UploadFilesRequestObject struct {
 	Params UploadFilesParams
 	Body   *multipart.Reader
@@ -5324,6 +6177,45 @@ func (response ListUsersdefaultApplicationProblemPlusJSONResponse) VisitListUser
 	return err
 }
 
+type CreateUserRequestObject struct {
+	Body *CreateUserJSONRequestBody
+}
+
+type CreateUserResponseObject interface {
+	VisitCreateUserResponse(w http.ResponseWriter) error
+}
+
+type CreateUser201JSONResponse UserCreated
+
+func (response CreateUser201JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateUserdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CreateUserdefaultApplicationProblemPlusJSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type DeleteUserRequestObject struct {
 	Id     Id `json:"id"`
 	Params DeleteUserParams
@@ -5347,6 +6239,45 @@ type DeleteUserdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response DeleteUserdefaultApplicationProblemPlusJSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetUserPasswordRequestObject struct {
+	Id Id `json:"id"`
+}
+
+type ResetUserPasswordResponseObject interface {
+	VisitResetUserPasswordResponse(w http.ResponseWriter) error
+}
+
+type ResetUserPassword200JSONResponse PasswordReset
+
+func (response ResetUserPassword200JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetUserPassworddefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ResetUserPassworddefaultApplicationProblemPlusJSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -5388,6 +6319,45 @@ type UpdateRolesdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response UpdateRolesdefaultApplicationProblemPlusJSONResponse) VisitUpdateRolesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetUserTotpRequestObject struct {
+	Id Id `json:"id"`
+}
+
+type ResetUserTotpResponseObject interface {
+	VisitResetUserTotpResponse(w http.ResponseWriter) error
+}
+
+type ResetUserTotp200JSONResponse TotpReset
+
+func (response ResetUserTotp200JSONResponse) VisitResetUserTotpResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetUserTotpdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ResetUserTotpdefaultApplicationProblemPlusJSONResponse) VisitResetUserTotpResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -5521,6 +6491,9 @@ type StrictServerInterface interface {
 	// (GET /api/v1/documents)
 	ListDocuments(ctx context.Context, request ListDocumentsRequestObject) (ListDocumentsResponseObject, error)
 
+	// (DELETE /api/v1/documents/{id})
+	DeleteDocument(ctx context.Context, request DeleteDocumentRequestObject) (DeleteDocumentResponseObject, error)
+
 	// (GET /api/v1/documents/{id})
 	GetDocument(ctx context.Context, request GetDocumentRequestObject) (GetDocumentResponseObject, error)
 
@@ -5532,6 +6505,9 @@ type StrictServerInterface interface {
 	// GetVersionFile The file to view (PDF), after the ACL check; supports Range
 	// (GET /api/v1/documents/{id}/versions/{version_id}/file)
 	GetVersionFile(ctx context.Context, request GetVersionFileRequestObject) (GetVersionFileResponseObject, error)
+	// GetVersionOriginal The file as it was read, to download, after the ACL check
+	// (GET /api/v1/documents/{id}/versions/{version_id}/original)
+	GetVersionOriginal(ctx context.Context, request GetVersionOriginalRequestObject) (GetVersionOriginalResponseObject, error)
 	// DecideEdge Confirm or reject a suggested link
 	// (PATCH /api/v1/graph/edges/{id})
 	DecideEdge(ctx context.Context, request DecideEdgeRequestObject) (DecideEdgeResponseObject, error)
@@ -5557,6 +6533,9 @@ type StrictServerInterface interface {
 	// (PUT /api/v1/me/password)
 	ChangeMyPassword(ctx context.Context, request ChangeMyPasswordRequestObject) (ChangeMyPasswordResponseObject, error)
 
+	// (GET /api/v1/people)
+	ListPeople(ctx context.Context, request ListPeopleRequestObject) (ListPeopleResponseObject, error)
+
 	// (GET /api/v1/settings)
 	GetSettings(ctx context.Context, request GetSettingsRequestObject) (GetSettingsResponseObject, error)
 
@@ -5578,6 +6557,9 @@ type StrictServerInterface interface {
 	// (POST /api/v1/sources/check)
 	CheckFolder(ctx context.Context, request CheckFolderRequestObject) (CheckFolderResponseObject, error)
 
+	// (DELETE /api/v1/sources/{id})
+	RemoveSource(ctx context.Context, request RemoveSourceRequestObject) (RemoveSourceResponseObject, error)
+
 	// (PATCH /api/v1/sources/{id})
 	UpdateSource(ctx context.Context, request UpdateSourceRequestObject) (UpdateSourceResponseObject, error)
 
@@ -5589,6 +6571,12 @@ type StrictServerInterface interface {
 
 	// (GET /api/v1/system/license)
 	GetLicense(ctx context.Context, request GetLicenseRequestObject) (GetLicenseResponseObject, error)
+
+	// (PUT /api/v1/system/license)
+	InstallLicense(ctx context.Context, request InstallLicenseRequestObject) (InstallLicenseResponseObject, error)
+	// GetSigningKey The public key that checks the signature of exported audit reports
+	// (GET /api/v1/system/signing-key)
+	GetSigningKey(ctx context.Context, request GetSigningKeyRequestObject) (GetSigningKeyResponseObject, error)
 	// UploadFiles Add files to the built-in `upload` source; they enter the normal ingestion pipeline
 	// (POST /api/v1/uploads)
 	UploadFiles(ctx context.Context, request UploadFilesRequestObject) (UploadFilesResponseObject, error)
@@ -5596,11 +6584,20 @@ type StrictServerInterface interface {
 	// (GET /api/v1/users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
 
+	// (POST /api/v1/users)
+	CreateUser(ctx context.Context, request CreateUserRequestObject) (CreateUserResponseObject, error)
+
 	// (DELETE /api/v1/users/{id})
 	DeleteUser(ctx context.Context, request DeleteUserRequestObject) (DeleteUserResponseObject, error)
 
+	// (POST /api/v1/users/{id}/password-reset)
+	ResetUserPassword(ctx context.Context, request ResetUserPasswordRequestObject) (ResetUserPasswordResponseObject, error)
+
 	// (PATCH /api/v1/users/{id}/roles)
 	UpdateRoles(ctx context.Context, request UpdateRolesRequestObject) (UpdateRolesResponseObject, error)
+
+	// (POST /api/v1/users/{id}/totp-reset)
+	ResetUserTotp(ctx context.Context, request ResetUserTotpRequestObject) (ResetUserTotpResponseObject, error)
 	// GetHealthz Process is alive
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -6042,6 +7039,33 @@ func (sh *strictHandler) ListDocuments(w http.ResponseWriter, r *http.Request, p
 	}
 }
 
+// DeleteDocument operation middleware
+func (sh *strictHandler) DeleteDocument(w http.ResponseWriter, r *http.Request, id Id, params DeleteDocumentParams) {
+	var request DeleteDocumentRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteDocument(ctx, request.(DeleteDocumentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteDocument")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteDocumentResponseObject); ok {
+		if err := validResponse.VisitDeleteDocumentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetDocument operation middleware
 func (sh *strictHandler) GetDocument(w http.ResponseWriter, r *http.Request, id Id) {
 	var request GetDocumentRequestObject
@@ -6148,6 +7172,33 @@ func (sh *strictHandler) GetVersionFile(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetVersionFileResponseObject); ok {
 		if err := validResponse.VisitGetVersionFileResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetVersionOriginal operation middleware
+func (sh *strictHandler) GetVersionOriginal(w http.ResponseWriter, r *http.Request, id Id, versionId openapi_types.UUID) {
+	var request GetVersionOriginalRequestObject
+
+	request.Id = id
+	request.VersionId = versionId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetVersionOriginal(ctx, request.(GetVersionOriginalRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetVersionOriginal")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetVersionOriginalResponseObject); ok {
+		if err := validResponse.VisitGetVersionOriginalResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6377,6 +7428,32 @@ func (sh *strictHandler) ChangeMyPassword(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// ListPeople operation middleware
+func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request, params ListPeopleParams) {
+	var request ListPeopleRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPeople(ctx, request.(ListPeopleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPeople")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListPeopleResponseObject); ok {
+		if err := validResponse.VisitListPeopleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSettings operation middleware
 func (sh *strictHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	var request GetSettingsRequestObject
@@ -6579,6 +7656,33 @@ func (sh *strictHandler) CheckFolder(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// RemoveSource operation middleware
+func (sh *strictHandler) RemoveSource(w http.ResponseWriter, r *http.Request, id Id, params RemoveSourceParams) {
+	var request RemoveSourceRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveSource(ctx, request.(RemoveSourceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveSource")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveSourceResponseObject); ok {
+		if err := validResponse.VisitRemoveSourceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // UpdateSource operation middleware
 func (sh *strictHandler) UpdateSource(w http.ResponseWriter, r *http.Request, id Id, params UpdateSourceParams) {
 	var request UpdateSourceRequestObject
@@ -6688,6 +7792,63 @@ func (sh *strictHandler) GetLicense(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// InstallLicense operation middleware
+func (sh *strictHandler) InstallLicense(w http.ResponseWriter, r *http.Request, params InstallLicenseParams) {
+	var request InstallLicenseRequestObject
+
+	request.Params = params
+
+	var body InstallLicenseJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InstallLicense(ctx, request.(InstallLicenseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InstallLicense")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InstallLicenseResponseObject); ok {
+		if err := validResponse.VisitInstallLicenseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSigningKey operation middleware
+func (sh *strictHandler) GetSigningKey(w http.ResponseWriter, r *http.Request) {
+	var request GetSigningKeyRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSigningKey(ctx, request.(GetSigningKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSigningKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSigningKeyResponseObject); ok {
+		if err := validResponse.VisitGetSigningKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // UploadFiles operation middleware
 func (sh *strictHandler) UploadFiles(w http.ResponseWriter, r *http.Request, params UploadFilesParams) {
 	var request UploadFilesRequestObject
@@ -6747,6 +7908,37 @@ func (sh *strictHandler) ListUsers(w http.ResponseWriter, r *http.Request, param
 	}
 }
 
+// CreateUser operation middleware
+func (sh *strictHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	var request CreateUserRequestObject
+
+	var body CreateUserJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateUser(ctx, request.(CreateUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateUserResponseObject); ok {
+		if err := validResponse.VisitCreateUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // DeleteUser operation middleware
 func (sh *strictHandler) DeleteUser(w http.ResponseWriter, r *http.Request, id Id, params DeleteUserParams) {
 	var request DeleteUserRequestObject
@@ -6767,6 +7959,32 @@ func (sh *strictHandler) DeleteUser(w http.ResponseWriter, r *http.Request, id I
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteUserResponseObject); ok {
 		if err := validResponse.VisitDeleteUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetUserPassword operation middleware
+func (sh *strictHandler) ResetUserPassword(w http.ResponseWriter, r *http.Request, id Id) {
+	var request ResetUserPasswordRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetUserPassword(ctx, request.(ResetUserPasswordRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetUserPassword")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetUserPasswordResponseObject); ok {
+		if err := validResponse.VisitResetUserPasswordResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6801,6 +8019,32 @@ func (sh *strictHandler) UpdateRoles(w http.ResponseWriter, r *http.Request, id 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateRolesResponseObject); ok {
 		if err := validResponse.VisitUpdateRolesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetUserTotp operation middleware
+func (sh *strictHandler) ResetUserTotp(w http.ResponseWriter, r *http.Request, id Id) {
+	var request ResetUserTotpRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetUserTotp(ctx, request.(ResetUserTotpRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetUserTotp")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetUserTotpResponseObject); ok {
+		if err := validResponse.VisitResetUserTotpResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6885,110 +8129,142 @@ func (sh *strictHandler) GetVersion(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
+	"BgA=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,
