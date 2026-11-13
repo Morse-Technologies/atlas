@@ -2,10 +2,15 @@ package sources
 
 import (
 	"bytes"
+	"errors"
 	"mime/multipart"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/morse/atlas/server/internal/platform/errs"
 )
 
 type upload struct{ name, content string }
@@ -93,5 +98,17 @@ func TestTooManyFilesIsRefused(t *testing.T) {
 	admin := &Admin{UploadRoot: t.TempDir()}
 	if _, err := admin.store(t.Context(), filepath.Join(admin.UploadRoot, "t"), body(t, uploads...)); err == nil {
 		t.Fatal("more files than the limit must be refused")
+	}
+}
+
+func TestDeletePathCannotEscapeTheUploadDir(t *testing.T) {
+	admin := &Admin{UploadRoot: t.TempDir()}
+	for _, name := range []string{"../a.pdf", "sub/a.pdf", `..\a.pdf`, ".hidden", "", "/etc/passwd"} {
+		if _, err := admin.uploadPath(uuid.New(), name); !errors.Is(err, errs.ErrInvalid) {
+			t.Errorf("uploadPath(%q) = %v, want ErrInvalid", name, err)
+		}
+	}
+	if _, err := admin.uploadPath(uuid.New(), "PNT-014.pdf"); err != nil {
+		t.Fatalf("a plain upload name must be accepted: %v", err)
 	}
 }

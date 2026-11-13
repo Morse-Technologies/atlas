@@ -18,11 +18,22 @@ import (
 
 const pdfMIME = "application/pdf"
 
-// ViewerFile is the PDF the viewer shows for one version. The caller closes it.
+// ViewerFile is a stored file served for one version: the PDF the viewer shows, or the original to download.
+// The caller closes it.
 type ViewerFile struct {
 	*os.File
 	Name    string
+	Mime    string
 	ModTime time.Time
+}
+
+// HasPreview reports whether the viewer can show a version of this type: a PDF, or a format rendered to PDF.
+func HasPreview(mime string) bool {
+	if mime == pdfMIME {
+		return true
+	}
+	format, ok := formats.ByMIME(mime)
+	return ok && format.RenderToPDF
 }
 
 // FileRequest names a version of a document.
@@ -34,12 +45,7 @@ type FileRequest struct {
 // OpenFile opens the PDF of a version: the original if it is a PDF, otherwise its rendering.
 // Formats that are not rendered to PDF (spreadsheets) have no viewer file and answer not found.
 func (l *Library) OpenFile(ctx context.Context, who Actor, req FileRequest) (ViewerFile, error) {
-	var row documentsdb.GetVersionForViewerRow
-	err := l.DB.InScopeTx(ctx, db.Scope{Tenant: who.TenantID, User: who.UserID}, func(tx pgx.Tx) error {
-		var getErr error
-		row, getErr = documentsdb.New(tx).GetVersionForViewer(ctx, documentsdb.GetVersionForViewerParams{ID: req.VersionID, DocumentID: req.DocumentID})
-		return db.NotFoundIfNoRows(getErr, "version")
-	})
+	row, err := l.versionForViewer(ctx, who, req)
 	if err != nil {
 		return ViewerFile{}, err
 	}
@@ -47,20 +53,39 @@ func (l *Library) OpenFile(ctx context.Context, who Actor, req FileRequest) (Vie
 	if err != nil {
 		return ViewerFile{}, err
 	}
-	return openPDF(path, row.ExternalID)
+	return openStored(path, row.ExternalID, pdfMIME)
+}
+
+// OpenOriginal opens the file as it was read, for people to download. The same permissions apply as for the viewer.
+func (l *Library) OpenOriginal(ctx context.Context, who Actor, req FileRequest) (ViewerFile, error) {
+	row, err := l.versionForViewer(ctx, who, req)
+	if err != nil {
+		return ViewerFile{}, err
+	}
+	return openStored(l.Blobs.BlobPath(who.TenantID, row.ContentHash), row.ExternalID, row.Mime)
+}
+
+func (l *Library) versionForViewer(ctx context.Context, who Actor, req FileRequest) (documentsdb.GetVersionForViewerRow, error) {
+	var row documentsdb.GetVersionForViewerRow
+	err := l.DB.InScopeTx(ctx, db.Scope{Tenant: who.TenantID, User: who.UserID}, func(tx pgx.Tx) error {
+		var getErr error
+		row, getErr = documentsdb.New(tx).GetVersionForViewer(ctx, documentsdb.GetVersionForViewerParams{ID: req.VersionID, DocumentID: req.DocumentID})
+		return db.NotFoundIfNoRows(getErr, "version")
+	})
+	return row, err
 }
 
 func (l *Library) viewerPath(tenant uuid.UUID, row documentsdb.GetVersionForViewerRow) (string, error) {
 	if row.Mime == pdfMIME {
 		return l.Blobs.BlobPath(tenant, row.ContentHash), nil
 	}
-	if format, ok := formats.ByMIME(row.Mime); ok && format.RenderToPDF {
+	if HasPreview(row.Mime) {
 		return l.Blobs.DerivedPath(blobs.DerivedKey{Hash: row.ContentHash, Stage: renderStage, Version: renderVersion}), nil
 	}
 	return "", fmt.Errorf("version has no PDF to show: %w", errs.ErrNotFound)
 }
 
-func openPDF(path, name string) (ViewerFile, error) {
+func openStored(path, name, mime string) (ViewerFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return ViewerFile{}, fmt.Errorf("the file is not available yet: %w", errs.ErrNotFound)
@@ -70,5 +95,5 @@ func openPDF(path, name string) (ViewerFile, error) {
 		_ = f.Close()
 		return ViewerFile{}, fmt.Errorf("stat viewer file: %w", err)
 	}
-	return ViewerFile{File: f, Name: name, ModTime: info.ModTime()}, nil
+	return ViewerFile{File: f, Name: name, Mime: mime, ModTime: info.ModTime()}, nil
 }

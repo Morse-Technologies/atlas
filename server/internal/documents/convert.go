@@ -42,6 +42,9 @@ func (m *Module) Convert(ctx context.Context, args events.VersionConvert) error 
 		return m.quarantineIfPermanent(ctx, failedVersion{v: v, stage: StepConvert, err: err})
 	}
 	return m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
+		if err := clearRetrying(ctx, tx, v.row.ID); err != nil {
+			return err
+		}
 		if err := sources.RecordStep(ctx, tx, v.step(StepConvert, sources.StepDone)); err != nil {
 			return err
 		}

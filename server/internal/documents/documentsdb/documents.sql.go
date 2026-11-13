@@ -12,6 +12,15 @@ import (
 	"github.com/google/uuid"
 )
 
+const clearVersionRetrying = `-- name: ClearVersionRetrying :exec
+UPDATE documents.document_versions SET state = 'processing' WHERE id = $1 AND state = 'retrying'
+`
+
+func (q *Queries) ClearVersionRetrying(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearVersionRetrying, id)
+	return err
+}
+
 const countCurrentByType = `-- name: CountCurrentByType :many
 SELECT doc_type, count(*)::int AS total FROM documents.documents
 WHERE deleted_at IS NULL AND current_version_id IS NOT NULL GROUP BY doc_type
@@ -54,6 +63,17 @@ func (q *Queries) CountProcessing(ctx context.Context) (int32, error) {
 	return column_1, err
 }
 
+const countRetrying = `-- name: CountRetrying :one
+SELECT count(*)::int FROM documents.document_versions WHERE state = 'retrying'
+`
+
+func (q *Queries) CountRetrying(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, countRetrying)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteBlocks = `-- name: DeleteBlocks :exec
 DELETE FROM documents.blocks WHERE version_id = $1
 `
@@ -63,6 +83,19 @@ func (q *Queries) DeleteBlocks(ctx context.Context, versionID uuid.UUID) error {
 	return err
 }
 
+const deleteBlocksOfDocumentsDeletedBefore = `-- name: DeleteBlocksOfDocumentsDeletedBefore :execrows
+DELETE FROM documents.blocks b USING documents.document_versions v, documents.documents d
+WHERE b.version_id = v.id AND v.document_id = d.id AND d.deleted_at < $1
+`
+
+func (q *Queries) DeleteBlocksOfDocumentsDeletedBefore(ctx context.Context, before *time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBlocksOfDocumentsDeletedBefore, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteChunks = `-- name: DeleteChunks :exec
 DELETE FROM documents.chunks WHERE version_id = $1
 `
@@ -70,6 +103,20 @@ DELETE FROM documents.chunks WHERE version_id = $1
 func (q *Queries) DeleteChunks(ctx context.Context, versionID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteChunks, versionID)
 	return err
+}
+
+const deleteChunksOfDocumentsDeletedBefore = `-- name: DeleteChunksOfDocumentsDeletedBefore :execrows
+DELETE FROM documents.chunks c USING documents.documents d
+WHERE c.document_id = d.id AND d.deleted_at < $1
+`
+
+// Vectors go with their chunk (ON DELETE CASCADE).
+func (q *Queries) DeleteChunksOfDocumentsDeletedBefore(ctx context.Context, before *time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteChunksOfDocumentsDeletedBefore, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getDocument = `-- name: GetDocument :one
@@ -113,6 +160,17 @@ func (q *Queries) GetDocumentACLSet(ctx context.Context, id uuid.UUID) (*uuid.UU
 	var acl_set_id *uuid.UUID
 	err := row.Scan(&acl_set_id)
 	return acl_set_id, err
+}
+
+const getSearchLanguage = `-- name: GetSearchLanguage :one
+SELECT language FROM documents.search_language
+`
+
+func (q *Queries) GetSearchLanguage(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, getSearchLanguage)
+	var language string
+	err := row.Scan(&language)
+	return language, err
 }
 
 const getVersion = `-- name: GetVersion :one
@@ -222,10 +280,10 @@ func (q *Queries) InsertBlocks(ctx context.Context, arg InsertBlocksParams) erro
 }
 
 const insertChunks = `-- name: InsertChunks :exec
-INSERT INTO documents.chunks (id, version_id, document_id, ord, page, section, context_header, text, codes, tokens, bbox, suspect_injection)
+INSERT INTO documents.chunks (id, version_id, document_id, ord, page, section, context_header, text, codes, tokens, bbox, suspect_injection, lang)
 SELECT unnest($1::uuid[]), $2, $3, unnest($4::int[]), unnest($5::int[]),
        unnest($6::text[]), unnest($7::text[]), unnest($8::text[]), unnest($9::text[]),
-       unnest($10::int[]), unnest($11::jsonb[]), unnest($12::boolean[])
+       unnest($10::int[]), unnest($11::jsonb[]), unnest($12::boolean[]), documents.tenant_regconfig()
 `
 
 type InsertChunksParams struct {
@@ -243,6 +301,7 @@ type InsertChunksParams struct {
 	Suspects    []bool
 }
 
+// New passages are indexed with the language the organization chose for word search.
 func (q *Queries) InsertChunks(ctx context.Context, arg InsertChunksParams) error {
 	_, err := q.db.Exec(ctx, insertChunks,
 		arg.Ids,
@@ -440,6 +499,32 @@ func (q *Queries) ListDocuments(ctx context.Context, arg ListDocumentsParams) ([
 	return items, nil
 }
 
+const listLiveContentHashes = `-- name: ListLiveContentHashes :many
+SELECT DISTINCT v.content_hash FROM documents.document_versions v
+JOIN documents.documents d ON d.id = v.document_id WHERE d.deleted_at IS NULL
+`
+
+// Every version of a document that is not deleted keeps its original, the superseded ones too.
+func (q *Queries) ListLiveContentHashes(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listLiveContentHashes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var content_hash string
+		if err := rows.Scan(&content_hash); err != nil {
+			return nil, err
+		}
+		items = append(items, content_hash)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProvenanceOf = `-- name: ListProvenanceOf :many
 SELECT document_id, field, value, source, confidence FROM documents.field_provenance
 WHERE document_id = ANY($1::uuid[]) ORDER BY field
@@ -480,7 +565,7 @@ func (q *Queries) ListProvenanceOf(ctx context.Context, documentIds []uuid.UUID)
 }
 
 const listVersionsOf = `-- name: ListVersionsOf :many
-SELECT id, document_id, state, pages, created_at, parsed_at FROM documents.document_versions
+SELECT id, document_id, state, pages, mime, created_at, parsed_at, revision FROM documents.document_versions
 WHERE document_id = ANY($1::uuid[]) ORDER BY created_at, id
 `
 
@@ -489,8 +574,10 @@ type ListVersionsOfRow struct {
 	DocumentID uuid.UUID
 	State      string
 	Pages      *int32
+	Mime       string
 	CreatedAt  time.Time
 	ParsedAt   *time.Time
+	Revision   string
 }
 
 func (q *Queries) ListVersionsOf(ctx context.Context, documentIds []uuid.UUID) ([]ListVersionsOfRow, error) {
@@ -507,8 +594,10 @@ func (q *Queries) ListVersionsOf(ctx context.Context, documentIds []uuid.UUID) (
 			&i.DocumentID,
 			&i.State,
 			&i.Pages,
+			&i.Mime,
 			&i.CreatedAt,
 			&i.ParsedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -532,6 +621,16 @@ type MarkDocumentDeletedParams struct {
 
 func (q *Queries) MarkDocumentDeleted(ctx context.Context, arg MarkDocumentDeletedParams) error {
 	_, err := q.db.Exec(ctx, markDocumentDeleted, arg.SourceID, arg.ExternalID)
+	return err
+}
+
+const markSourceDocumentsDeleted = `-- name: MarkSourceDocumentsDeleted :exec
+UPDATE documents.documents SET deleted_at = now(), updated_at = now()
+WHERE source_id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) MarkSourceDocumentsDeleted(ctx context.Context, sourceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markSourceDocumentsDeleted, sourceID)
 	return err
 }
 
@@ -564,6 +663,16 @@ UPDATE documents.document_versions SET state = 'quarantined' WHERE id = $1
 
 func (q *Queries) MarkVersionQuarantined(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markVersionQuarantined, id)
+	return err
+}
+
+const markVersionRetrying = `-- name: MarkVersionRetrying :exec
+UPDATE documents.document_versions SET state = 'retrying' WHERE id = $1 AND state IN ('processing', 'parsed')
+`
+
+// Only a version still on its way through the pipeline can be retrying; an indexed or replaced one is left as it is.
+func (q *Queries) MarkVersionRetrying(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markVersionRetrying, id)
 	return err
 }
 
@@ -620,6 +729,20 @@ type PublishEmbeddingsParams struct {
 func (q *Queries) PublishEmbeddings(ctx context.Context, arg PublishEmbeddingsParams) error {
 	_, err := q.db.Exec(ctx, publishEmbeddings, arg.AclSetID, arg.VersionID)
 	return err
+}
+
+const relabelChunks = `-- name: RelabelChunks :execrows
+UPDATE documents.chunks SET lang = documents.tenant_regconfig()
+WHERE id IN (SELECT id FROM documents.chunks WHERE lang <> documents.tenant_regconfig() LIMIT $1)
+`
+
+// Gives up to batch passages the word-search language of the organization; their word index follows by itself.
+func (q *Queries) RelabelChunks(ctx context.Context, batch int32) (int64, error) {
+	result, err := q.db.Exec(ctx, relabelChunks, batch)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const retireDocumentChunks = `-- name: RetireDocumentChunks :exec
@@ -681,6 +804,27 @@ func (q *Queries) RetireOtherEmbeddings(ctx context.Context, arg RetireOtherEmbe
 	return err
 }
 
+const retireSourceChunks = `-- name: RetireSourceChunks :exec
+UPDATE documents.chunks c SET is_current = false FROM documents.documents d
+WHERE c.document_id = d.id AND d.source_id = $1
+`
+
+func (q *Queries) RetireSourceChunks(ctx context.Context, sourceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, retireSourceChunks, sourceID)
+	return err
+}
+
+const retireSourceEmbeddings = `-- name: RetireSourceEmbeddings :exec
+UPDATE documents.chunk_embeddings e SET is_current = false FROM documents.chunks c
+JOIN documents.documents d ON d.id = c.document_id
+WHERE e.chunk_id = c.id AND d.source_id = $1
+`
+
+func (q *Queries) RetireSourceEmbeddings(ctx context.Context, sourceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, retireSourceEmbeddings, sourceID)
+	return err
+}
+
 const setCurrentVersion = `-- name: SetCurrentVersion :exec
 UPDATE documents.documents SET current_version_id = $1, updated_at = now() WHERE id = $2
 `
@@ -693,6 +837,37 @@ type SetCurrentVersionParams struct {
 func (q *Queries) SetCurrentVersion(ctx context.Context, arg SetCurrentVersionParams) error {
 	_, err := q.db.Exec(ctx, setCurrentVersion, arg.VersionID, arg.DocumentID)
 	return err
+}
+
+const setExtractedProvenance = `-- name: SetExtractedProvenance :execrows
+INSERT INTO documents.field_provenance (document_id, field, value, source, confidence)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (document_id, field) DO UPDATE SET value = EXCLUDED.value, source = EXCLUDED.source,
+  confidence = EXCLUDED.confidence, updated_at = now()
+WHERE documents.field_provenance.source <> 'manual'
+`
+
+type SetExtractedProvenanceParams struct {
+	DocumentID uuid.UUID
+	Field      string
+	Value      string
+	Source     string
+	Confidence float32
+}
+
+// A field a person corrected (source "manual") is never replaced: zero rows tell the caller to leave the value alone.
+func (q *Queries) SetExtractedProvenance(ctx context.Context, arg SetExtractedProvenanceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setExtractedProvenance,
+		arg.DocumentID,
+		arg.Field,
+		arg.Value,
+		arg.Source,
+		arg.Confidence,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setManualProvenance = `-- name: SetManualProvenance :exec
@@ -709,6 +884,16 @@ type SetManualProvenanceParams struct {
 
 func (q *Queries) SetManualProvenance(ctx context.Context, arg SetManualProvenanceParams) error {
 	_, err := q.db.Exec(ctx, setManualProvenance, arg.DocumentID, arg.Field, arg.Value)
+	return err
+}
+
+const setSearchLanguage = `-- name: SetSearchLanguage :exec
+INSERT INTO documents.search_language (language) VALUES ($1)
+ON CONFLICT (tenant_id) DO UPDATE SET language = EXCLUDED.language, updated_at = now()
+`
+
+func (q *Queries) SetSearchLanguage(ctx context.Context, language string) error {
+	_, err := q.db.Exec(ctx, setSearchLanguage, language)
 	return err
 }
 
@@ -754,6 +939,20 @@ type SetSourceEmbeddingsACLParams struct {
 
 func (q *Queries) SetSourceEmbeddingsACL(ctx context.Context, arg SetSourceEmbeddingsACLParams) error {
 	_, err := q.db.Exec(ctx, setSourceEmbeddingsACL, arg.AclSetID, arg.SourceID)
+	return err
+}
+
+const setVersionRevision = `-- name: SetVersionRevision :exec
+UPDATE documents.document_versions SET revision = $1 WHERE id = $2
+`
+
+type SetVersionRevisionParams struct {
+	Revision string
+	ID       uuid.UUID
+}
+
+func (q *Queries) SetVersionRevision(ctx context.Context, arg SetVersionRevisionParams) error {
+	_, err := q.db.Exec(ctx, setVersionRevision, arg.Revision, arg.ID)
 	return err
 }
 

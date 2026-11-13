@@ -13,6 +13,7 @@ import (
 	"github.com/morse/atlas/server/internal/events"
 	"github.com/morse/atlas/server/internal/platform/blobs"
 	"github.com/morse/atlas/server/internal/platform/dbtest"
+	"github.com/morse/atlas/server/internal/sources"
 )
 
 type libraryFixture struct {
@@ -123,5 +124,25 @@ func TestAnotherTenantCannotSeeTheDocument(t *testing.T) {
 	other := Actor{TenantID: dbtest.NewTenant(t, f.lib.DB)}
 	if _, err := f.lib.Get(f.ctx, other, f.docs["a/PNT-014.pdf"]); err == nil {
 		t.Fatal("RLS must hide the document from another tenant")
+	}
+}
+
+func TestADocumentSaysWhetherItCameFromAFolderOrAnUpload(t *testing.T) {
+	f := newLibraryFixture(t)
+	var source uuid.UUID
+	var doc uuid.UUID
+	err := f.lib.DB.InTenantTx(f.ctx, f.who.TenantID, func(tx pgx.Tx) (err error) {
+		if source, err = sources.AddFolder(f.ctx, tx, sources.NewFolder{TenantID: f.who.TenantID, Name: "docs", Path: t.TempDir()}); err != nil {
+			return err
+		}
+		doc, err = f.insert(tx, source, "x/real.pdf", "procedure")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.lib.Get(f.ctx, f.who, doc)
+	if err != nil || got.SourceKind != sources.KindFolder {
+		t.Fatalf("SourceKind = %q, %v; want %q", got.SourceKind, err, sources.KindFolder)
 	}
 }

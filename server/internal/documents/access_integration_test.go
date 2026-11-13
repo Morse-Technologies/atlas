@@ -93,16 +93,32 @@ func TestARestrictedSourceIsInvisibleToEveryoneButItsReaders(t *testing.T) {
 	}
 }
 
-func TestAHiddenDocumentsFileIsNotFoundForTheOthers(t *testing.T) {
-	r := newRestricted(t)
+func (r restricted) currentVersion() uuid.UUID {
+	r.t.Helper()
 	var version uuid.UUID
-	must(t, r.d.InTenantTx(r.ctx, r.who.TenantID, func(tx pgx.Tx) error {
+	must(r.t, r.d.InTenantTx(r.ctx, r.who.TenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.ctx, "SELECT current_version_id FROM documents.documents WHERE id = $1", r.doc).Scan(&version)
 	}))
+	return version
+}
+
+func TestAHiddenDocumentsFileIsNotFoundForTheOthers(t *testing.T) {
+	r := newRestricted(t)
+	version := r.currentVersion()
 	r.restrictTo([]uuid.UUID{r.ana.UserID})
 	_, err := r.lib.OpenFile(r.ctx, r.ben, FileRequest{DocumentID: r.doc, VersionID: version})
 	if !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("Ben opening the file = %v, want not found", err)
+	}
+}
+
+func TestOriginalIsHiddenFromAPersonWhoCannotRead(t *testing.T) {
+	r := newRestricted(t)
+	version := r.currentVersion()
+	r.restrictTo([]uuid.UUID{r.ana.UserID})
+	_, err := r.lib.OpenOriginal(r.ctx, r.ben, FileRequest{DocumentID: r.doc, VersionID: version})
+	if !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("Ben downloading the original = %v, want not found", err)
 	}
 }
 

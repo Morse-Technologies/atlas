@@ -53,7 +53,7 @@ func (m *Module) Fetch(ctx context.Context, args events.VersionFetch) error {
 	if err != nil {
 		return err
 	}
-	format, err := checkHostileFile(staged.Staged, target.maxBytes)
+	format, err := checkHostileFile(candidate{staged: staged.Staged, name: args.ExternalID}, target.maxBytes)
 	if err != nil {
 		m.Blobs.Discard(staged.Staged)
 		return m.quarantineIfPermanent(ctx, args, err)
@@ -103,6 +103,17 @@ func (m *Module) quarantineIfPermanent(ctx context.Context, args events.VersionF
 	return m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
 		return Quarantine(ctx, tx, failure)
 	})
+}
+
+// onFetchFailed sends a file to quarantine when its reads keep failing until the tries run out. Before that
+// there is nothing to show: the file has no version yet.
+func (m *Module) onFetchFailed(ctx context.Context, f jobs.Failed[events.VersionFetch]) error {
+	if !f.Exhausted {
+		return nil
+	}
+	failure := Failure{SourceID: f.Args.SourceID, ExternalID: f.Args.ExternalID, Stage: StepFetch,
+		Err: errs.NewPermanent(errs.ReasonRetriesExhausted, f.Err)}
+	return m.DB.InTenantTx(ctx, f.Args.TenantID, func(tx pgx.Tx) error { return Quarantine(ctx, tx, failure) })
 }
 
 type storeRequest struct {

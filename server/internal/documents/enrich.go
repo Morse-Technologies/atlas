@@ -14,8 +14,8 @@ import (
 	"github.com/morse/atlas/server/internal/sources"
 )
 
-// Enrich turns the parsed document into blocks and makes the version current.
-// Part 2 adds chunking, metadata and entities to this job (ATLAS.md §7.2).
+// Enrich turns the parsed document into blocks, makes the version current and reads its title, code, revision and
+// language with fixed rules (extract.go). Chunking follows as its own job (ATLAS.md §7.2).
 func (m *Module) Enrich(ctx context.Context, args events.VersionEnrich) error {
 	v, err := m.loadVersion(ctx, args.TenantID, args.VersionID)
 	if err != nil {
@@ -41,7 +41,13 @@ type enriched struct {
 }
 
 func storeEnriched(ctx context.Context, tx pgx.Tx, e enriched) error {
+	if err := clearRetrying(ctx, tx, e.blocks.v.row.ID); err != nil {
+		return err
+	}
 	if err := saveBlocks(ctx, tx, e.blocks); err != nil {
+		return err
+	}
+	if err := storeExtracted(ctx, tx, storing{v: e.blocks.v, read: extract(e.blocks.parsed, e.blocks.v.row.ExternalID)}); err != nil {
 		return err
 	}
 	if err := sources.RecordStep(ctx, tx, e.blocks.v.step(StepEnrich, sources.StepDone)); err != nil {

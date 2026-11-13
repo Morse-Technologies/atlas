@@ -108,10 +108,21 @@ var errMissingTenant = errors.New("job has no tenant id")
 // Handler is what a tenant job does with its arguments.
 type Handler[T TenantArgs] func(ctx context.Context, args T) error
 
-// Job is a handler and its timeout. A zero timeout uses the client default (defaultTimeout).
+// Failed is one failed attempt of a job that will be (or was the last time) retried: what it was asked, why it
+// failed, and whether River gives up after it.
+type Failed[T TenantArgs] struct {
+	Args      T
+	Err       error
+	Exhausted bool
+}
+
+// Job is a handler and its timeout. A zero timeout uses the client default (defaultTimeout). OnFailed, if set,
+// runs after every failed attempt that retrying could fix, so the module can show the file as retrying and,
+// on the last attempt, quarantine it. Permanent and domain errors do not call it: they end the job at once.
 type Job[T TenantArgs] struct {
-	Handle  Handler[T]
-	Timeout time.Duration
+	Handle   Handler[T]
+	Timeout  time.Duration
+	OnFailed func(ctx context.Context, failed Failed[T]) error
 }
 
 // AddTenantJob registers a tenant-scoped job. Errors are mapped by RetryOrCancel.
@@ -130,7 +141,21 @@ func (w *tenantWorker[T]) Work(ctx context.Context, job *river.Job[T]) error {
 	if job.Args.Tenant() == uuid.Nil {
 		return river.JobCancel(errMissingTenant)
 	}
-	return RetryOrCancel(w.job.Handle(ctx, job.Args))
+	return w.outcome(ctx, job, w.job.Handle(ctx, job.Args))
+}
+
+// outcome decides how an attempt ends and tells the module about a failure worth retrying.
+func (w *tenantWorker[T]) outcome(ctx context.Context, job *river.Job[T], err error) error {
+	ended := RetryOrCancel(err)
+	var cancel *river.JobCancelError
+	if err == nil || errors.As(ended, &cancel) || w.job.OnFailed == nil {
+		return ended
+	}
+	failed := Failed[T]{Args: job.Args, Err: err, Exhausted: job.Attempt >= job.MaxAttempts}
+	if hookErr := w.job.OnFailed(ctx, failed); hookErr != nil {
+		return errors.Join(err, fmt.Errorf("record failed attempt: %w", hookErr))
+	}
+	return ended
 }
 
 // RetryOrCancel decides how a failed job ends: permanent and domain errors cancel it (retrying cannot help),
@@ -142,4 +167,24 @@ func RetryOrCancel(err error) error {
 	default:
 		return err
 	}
+}
+
+// StateCount is how many jobs of one queue are in one state (available, running, retryable, discarded...).
+type StateCount struct {
+	Queue string
+	State string
+	Jobs  int
+}
+
+// CountByState reads the queue tables, for the metrics. River keeps no tenant data to scope here.
+func CountByState(ctx context.Context, pool *pgxpool.Pool) ([]StateCount, error) {
+	rows, err := pool.Query(ctx, `SELECT queue, state::text, count(*) FROM `+Schema+`.river_job GROUP BY queue, state`)
+	if err != nil {
+		return nil, fmt.Errorf("count jobs by state: %w", err)
+	}
+	counts, err := pgx.CollectRows(rows, pgx.RowToStructByPos[StateCount])
+	if err != nil {
+		return nil, fmt.Errorf("count jobs by state: %w", err)
+	}
+	return counts, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
@@ -15,8 +16,9 @@ import (
 	"github.com/morse/atlas/server/internal/sources/sourcesdb"
 )
 
-// Scan outcomes recorded in sources.scans.
+// Scan outcomes recorded in sources.scans (a scan is "running" in between).
 const (
+	scanRunning   = "running"
 	scanCompleted = "completed"
 	scanFailed    = "failed"
 	scanHeld      = "held"
@@ -24,6 +26,7 @@ const (
 
 // scanState is the source as the scan found it before walking.
 type scanState struct {
+	scanID     uuid.UUID // the row of sources.scans that this scan updates when it ends
 	generation int64
 	root       string
 	known      []FileState
@@ -58,15 +61,27 @@ func (m *Module) startScan(ctx context.Context, args events.SourceRescan) (scanS
 	state := scanState{startedAt: time.Now()}
 	err := m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
 		q := sourcesdb.New(tx)
-		row, err := q.StartScan(ctx, args.SourceID)
+		if err := failStaleScans(ctx, q, args.SourceID); err != nil {
+			return err
+		}
+		row, err := q.StartScan(ctx, sourcesdb.StartScanParams{ID: args.SourceID, StartedAt: state.startedAt})
 		if err != nil {
 			return db.NotFoundIfNoRows(err, "source")
 		}
-		state.generation, state.root = row.ScanGeneration, row.RootPath
+		state.scanID, state.generation, state.root = row.ScanID, row.ScanGeneration, row.RootPath
 		state.known, err = presentFiles(ctx, q, args)
 		return err
 	})
 	return state, err
+}
+
+// failStaleScans closes scans of the source left running by a process that died: no job lives longer than rescanTimeout.
+func failStaleScans(ctx context.Context, q *sourcesdb.Queries, sourceID uuid.UUID) error {
+	err := q.FailStaleScans(ctx, sourcesdb.FailStaleScansParams{SourceID: sourceID, OlderThan: time.Now().Add(-rescanTimeout)})
+	if err != nil {
+		return fmt.Errorf("close interrupted scans: %w", err)
+	}
+	return nil
 }
 
 func presentFiles(ctx context.Context, q *sourcesdb.Queries, args events.SourceRescan) ([]FileState, error) {
@@ -177,14 +192,13 @@ func fetchJobs(r scanResult) []river.JobArgs {
 
 func recordScan(ctx context.Context, q *sourcesdb.Queries, r scanResult) error {
 	status, errText := scanOutcome(r)
-	err := q.RecordScan(ctx, sourcesdb.RecordScanParams{
-		SourceID: r.args.SourceID, Generation: r.state.generation, Status: status,
+	err := q.FinishScan(ctx, sourcesdb.FinishScanParams{
+		ID: r.state.scanID, Status: status,
 		Discovered: int32(len(r.seen)), Changed: int32(len(r.plan.Fetch)), Moved: int32(len(r.plan.Moves)),
-		Deleted: int32(len(r.plan.Delete)), HeldDeletions: int32(r.plan.HeldDeletions),
-		Error: errText, StartedAt: r.state.startedAt,
+		Deleted: int32(len(r.plan.Delete)), HeldDeletions: int32(r.plan.HeldDeletions), Error: errText,
 	})
 	if err != nil {
-		return fmt.Errorf("record scan: %w", err)
+		return fmt.Errorf("finish scan: %w", err)
 	}
 	return q.FinishSourceScan(ctx, sourcesdb.FinishSourceScanParams{ID: r.args.SourceID, LastError: errText})
 }

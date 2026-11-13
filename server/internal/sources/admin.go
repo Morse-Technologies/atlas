@@ -14,6 +14,7 @@ import (
 	"github.com/morse/atlas/server/internal/access"
 	"github.com/morse/atlas/server/internal/audit"
 	"github.com/morse/atlas/server/internal/events"
+	"github.com/morse/atlas/server/internal/jobs"
 	"github.com/morse/atlas/server/internal/platform/db"
 	"github.com/morse/atlas/server/internal/platform/errs"
 	"github.com/morse/atlas/server/internal/sources/sourcesdb"
@@ -138,6 +139,28 @@ func (a *Admin) setStatus(ctx context.Context, who Actor, c statusChange) (Sourc
 	return out, err
 }
 
+// Remove stops reading a folder source and tells documents to retire what came from it. The folder is not touched.
+// The built-in upload source cannot be removed: its files are deleted one by one.
+func (a *Admin) Remove(ctx context.Context, who Actor, id uuid.UUID) error {
+	return a.DB.InTenantTx(ctx, who.TenantID, func(tx pgx.Tx) error {
+		src, err := get(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if src.Kind == KindUpload {
+			return fmt.Errorf("the uploads source cannot be removed; delete its files instead: %w", errs.ErrConflict)
+		}
+		q := sourcesdb.New(tx)
+		if _, err := q.RemoveSource(ctx, sourcesdb.RemoveSourceParams{ID: id, RemovedAt: new(a.Now())}); err != nil {
+			return fmt.Errorf("remove source: %w", err)
+		}
+		if err := jobs.Enqueue(ctx, tx, events.SourceRemoved{TenantID: who.TenantID, SourceID: id}); err != nil {
+			return err
+		}
+		return a.record(ctx, tx, change{by: who.UserID, action: "source.removed", subject: sourceSubject(id)})
+	})
+}
+
 // Sync asks for a scan of the source now.
 func (a *Admin) Sync(ctx context.Context, who Actor, id uuid.UUID) error {
 	return a.DB.InTenantTx(ctx, who.TenantID, func(tx pgx.Tx) error {
@@ -153,7 +176,7 @@ type Scan struct {
 	ID         uuid.UUID
 	SourceID   uuid.UUID
 	StartedAt  time.Time
-	FinishedAt time.Time
+	FinishedAt *time.Time // nil while the scan is running
 	Discovered int
 	Changed    int
 	Failed     int

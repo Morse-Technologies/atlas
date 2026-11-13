@@ -135,9 +135,7 @@ type textField struct {
 
 // applyPatch merges patch into the current row. It returns the full update, and the fields that really changed.
 func applyPatch(cur documentsdb.DocumentsDocument, p MetadataPatch, tax catalog.Snapshot) (documentsdb.UpdateMetadataParams, []fieldValue, error) {
-	out := documentsdb.UpdateMetadataParams{ID: cur.ID, Title: cur.Title, Code: cur.Code, DocType: cur.DocType,
-		Status: cur.Status, Department: cur.Department, OwnerID: cur.OwnerID, ApprovedAt: cur.ApprovedAt,
-		ReviewDueAt: cur.ReviewDueAt, Language: cur.Language, Attributes: cur.Attributes}
+	out := metadataParamsOf(cur)
 	if err := validatePatch(p, tax); err != nil {
 		return out, nil, err
 	}
@@ -147,6 +145,13 @@ func applyPatch(cur documentsdb.DocumentsDocument, p MetadataPatch, tax catalog.
 	attrs, attrChanges, err := applyAttributes(cur.Attributes, p.Attributes)
 	out.Attributes = attrs
 	return out, append(changed, attrChanges...), err
+}
+
+// metadataParamsOf is an update that changes nothing: every column keeps the value the row has.
+func metadataParamsOf(cur documentsdb.DocumentsDocument) documentsdb.UpdateMetadataParams {
+	return documentsdb.UpdateMetadataParams{ID: cur.ID, Title: cur.Title, Code: cur.Code, DocType: cur.DocType,
+		Status: cur.Status, Department: cur.Department, OwnerID: cur.OwnerID, ApprovedAt: cur.ApprovedAt,
+		ReviewDueAt: cur.ReviewDueAt, Language: cur.Language, Attributes: cur.Attributes}
 }
 
 func textFields(cur documentsdb.DocumentsDocument, p MetadataPatch, out *documentsdb.UpdateMetadataParams) []textField {
@@ -252,4 +257,84 @@ func ownerMustExist(ctx context.Context, tx pgx.Tx, owner *uuid.UUID) error {
 		return fmt.Errorf("owner %s is not a user of this organization: %w", owner, errs.ErrInvalid)
 	}
 	return nil
+}
+
+// storing is a version and the values the rules read from it.
+type storing struct {
+	v    version
+	read extracted
+}
+
+// extractedField is one value the rules read and the column it would fill.
+type extractedField struct {
+	name string
+	read reading
+	dst  *string
+}
+
+// storeExtracted keeps what the rules read: the revision on the version, and the title, code and language on the
+// document unless a person corrected that field (their correction is never replaced). A new code is announced so the
+// map links the document by it.
+func storeExtracted(ctx context.Context, tx pgx.Tx, in storing) error {
+	q := documentsdb.New(tx)
+	if err := setRevision(ctx, q, in); err != nil {
+		return err
+	}
+	cur, err := q.GetDocument(ctx, in.v.row.DocumentID)
+	if err != nil {
+		return notFound(err, "document")
+	}
+	params := metadataParamsOf(cur)
+	filled, err := fillFromReadings(ctx, q, readings{document: cur.ID, fields: in.fields(&params)})
+	if err != nil || !filled {
+		return err
+	}
+	if err := q.UpdateMetadata(ctx, params); err != nil {
+		return fmt.Errorf("update extracted metadata: %w", err)
+	}
+	if params.Code == cur.Code {
+		return nil
+	}
+	return jobs.Enqueue(ctx, tx, events.DocumentChanged{TenantID: in.v.tenantID, DocumentID: cur.ID})
+}
+
+func setRevision(ctx context.Context, q *documentsdb.Queries, in storing) error {
+	if in.read.revision.value == "" {
+		return nil
+	}
+	if err := q.SetVersionRevision(ctx, documentsdb.SetVersionRevisionParams{ID: in.v.row.ID, Revision: in.read.revision.value}); err != nil {
+		return fmt.Errorf("set version revision: %w", err)
+	}
+	return nil
+}
+
+func (in storing) fields(p *documentsdb.UpdateMetadataParams) []extractedField {
+	e := in.read
+	return []extractedField{{"title", e.title, &p.Title}, {"code", e.code, &p.Code}, {"language", e.language, &p.Language}}
+}
+
+// readings are the fields read for one document.
+type readings struct {
+	document uuid.UUID
+	fields   []extractedField
+}
+
+// fillFromReadings records the provenance of each value read and puts it in its column, unless the field is manual.
+// It says whether any column changed.
+func fillFromReadings(ctx context.Context, q *documentsdb.Queries, in readings) (bool, error) {
+	filled := false
+	for _, f := range in.fields {
+		if f.read.value == "" {
+			continue
+		}
+		rows, err := q.SetExtractedProvenance(ctx, documentsdb.SetExtractedProvenanceParams{DocumentID: in.document, Field: f.name,
+			Value: f.read.value, Source: f.read.source, Confidence: f.read.confidence})
+		if err != nil {
+			return false, fmt.Errorf("record provenance of %s: %w", f.name, err)
+		}
+		if rows > 0 {
+			*f.dst, filled = f.read.value, true
+		}
+	}
+	return filled, nil
 }

@@ -59,7 +59,7 @@ func (m *Module) OnVersionStored(ctx context.Context, args events.VersionStored)
 	})
 }
 
-// titleFromPath is the provisional title until metadata extraction (part 2) reads the real one.
+// titleFromPath is the provisional title; Enrich replaces it when it reads a heading (extract.go), and a person can correct it.
 func titleFromPath(externalID string) string {
 	base := path.Base(externalID)
 	return strings.TrimSuffix(base, path.Ext(base))
@@ -75,6 +75,21 @@ func (m *Module) OnDocumentDeleted(ctx context.Context, args events.DocumentDele
 		return q.MarkDocumentDeleted(ctx, documentsdb.MarkDocumentDeletedParams{
 			SourceID: args.SourceID, ExternalID: args.ExternalID,
 		})
+	})
+}
+
+// OnSourceRemoved retires every document of a source an administrator stopped reading, in one transaction:
+// they leave search, lists, the map and related documents together.
+func (m *Module) OnSourceRemoved(ctx context.Context, args events.SourceRemoved) error {
+	return m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
+		q := documentsdb.New(tx)
+		if err := q.RetireSourceChunks(ctx, args.SourceID); err != nil {
+			return fmt.Errorf("retire source chunks: %w", err)
+		}
+		if err := q.RetireSourceEmbeddings(ctx, args.SourceID); err != nil {
+			return fmt.Errorf("retire source embeddings: %w", err)
+		}
+		return q.MarkSourceDocumentsDeleted(ctx, args.SourceID)
 	})
 }
 

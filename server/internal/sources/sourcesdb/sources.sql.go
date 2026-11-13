@@ -64,6 +64,22 @@ func (q *Queries) DeleteFileRow(ctx context.Context, arg DeleteFileRowParams) er
 	return err
 }
 
+const failStaleScans = `-- name: FailStaleScans :exec
+UPDATE sources.scans SET status = 'failed', error = 'interrupted', finished_at = now()
+WHERE source_id = $1 AND status = 'running' AND started_at < $2
+`
+
+type FailStaleScansParams struct {
+	SourceID  uuid.UUID
+	OlderThan time.Time
+}
+
+// A scan still running long after the job timeout was interrupted (the process died): close it as failed.
+func (q *Queries) FailStaleScans(ctx context.Context, arg FailStaleScansParams) error {
+	_, err := q.db.Exec(ctx, failStaleScans, arg.SourceID, arg.OlderThan)
+	return err
+}
+
 const findUploadSource = `-- name: FindUploadSource :one
 SELECT id FROM sources.sources WHERE kind = 'upload' LIMIT 1
 `
@@ -75,8 +91,45 @@ func (q *Queries) FindUploadSource(ctx context.Context) (uuid.UUID, error) {
 	return id, err
 }
 
+const finishScan = `-- name: FinishScan :exec
+UPDATE sources.scans SET status = $1, discovered = $2, changed = $3, moved = $4,
+  deleted = $5, held_deletions = $6, error = $7, finished_at = now()
+WHERE id = $8
+`
+
+type FinishScanParams struct {
+	Status        string
+	Discovered    int32
+	Changed       int32
+	Moved         int32
+	Deleted       int32
+	HeldDeletions int32
+	Error         *string
+	ID            uuid.UUID
+}
+
+func (q *Queries) FinishScan(ctx context.Context, arg FinishScanParams) error {
+	_, err := q.db.Exec(ctx, finishScan,
+		arg.Status,
+		arg.Discovered,
+		arg.Changed,
+		arg.Moved,
+		arg.Deleted,
+		arg.HeldDeletions,
+		arg.Error,
+		arg.ID,
+	)
+	return err
+}
+
 const finishSourceScan = `-- name: FinishSourceScan :exec
-UPDATE sources.sources SET last_scan_at = now(), last_error = $1 WHERE id = $2
+UPDATE sources.sources SET last_scan_at = now(), last_error = $1::text,
+  status = CASE
+    WHEN $1::text IS NOT NULL AND status <> 'paused' THEN 'error'
+    WHEN $1::text IS NULL AND status = 'error' THEN 'active'
+    ELSE status
+  END
+WHERE id = $2
 `
 
 type FinishSourceScanParams struct {
@@ -84,6 +137,7 @@ type FinishSourceScanParams struct {
 	ID        uuid.UUID
 }
 
+// A failing scan puts the source in error (unless an administrator paused it); the next good scan clears it.
 func (q *Queries) FinishSourceScan(ctx context.Context, arg FinishSourceScanParams) error {
 	_, err := q.db.Exec(ctx, finishSourceScan, arg.LastError, arg.ID)
 	return err
@@ -106,7 +160,7 @@ func (q *Queries) GetFileHash(ctx context.Context, arg GetFileHashParams) (*stri
 }
 
 const getSource = `-- name: GetSource :one
-SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE id = $1
+SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE id = $1 AND removed_at IS NULL
 `
 
 type GetSourceRow struct {
@@ -147,8 +201,37 @@ func (q *Queries) GetSourceACLSet(ctx context.Context, id uuid.UUID) (*uuid.UUID
 	return acl_set_id, err
 }
 
+const getSourceKinds = `-- name: GetSourceKinds :many
+SELECT id, kind FROM sources.sources WHERE id = ANY($1::uuid[])
+`
+
+type GetSourceKindsRow struct {
+	ID   uuid.UUID
+	Kind string
+}
+
+func (q *Queries) GetSourceKinds(ctx context.Context, ids []uuid.UUID) ([]GetSourceKindsRow, error) {
+	rows, err := q.db.Query(ctx, getSourceKinds, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetSourceKindsRow
+	for rows.Next() {
+		var i GetSourceKindsRow
+		if err := rows.Scan(&i.ID, &i.Kind); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSourceRoot = `-- name: GetSourceRoot :one
-SELECT root_path, max_file_bytes FROM sources.sources WHERE id = $1
+SELECT root_path, max_file_bytes FROM sources.sources WHERE id = $1 AND removed_at IS NULL
 `
 
 type GetSourceRootRow struct {
@@ -165,7 +248,7 @@ func (q *Queries) GetSourceRoot(ctx context.Context, id uuid.UUID) (GetSourceRoo
 
 const listDueSources = `-- name: ListDueSources :many
 SELECT id FROM sources.sources
-WHERE status = 'active' AND (last_scan_at IS NULL OR last_scan_at + rescan_interval <= now())
+WHERE removed_at IS NULL AND status IN ('active', 'error') AND (last_scan_at IS NULL OR last_scan_at + rescan_interval <= now())
 `
 
 func (q *Queries) ListDueSources(ctx context.Context) ([]uuid.UUID, error) {
@@ -326,7 +409,7 @@ type ListScansPageRow struct {
 	ID         uuid.UUID
 	SourceID   uuid.UUID
 	StartedAt  time.Time
-	FinishedAt time.Time
+	FinishedAt *time.Time
 	Discovered int32
 	Changed    int32
 	Failed     int32
@@ -362,7 +445,7 @@ func (q *Queries) ListScansPage(ctx context.Context, arg ListScansPageParams) ([
 }
 
 const listSources = `-- name: ListSources :many
-SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources ORDER BY created_at
+SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE removed_at IS NULL ORDER BY created_at
 `
 
 type ListSourcesRow struct {
@@ -452,40 +535,6 @@ func (q *Queries) RecordFetchedFile(ctx context.Context, arg RecordFetchedFilePa
 	return err
 }
 
-const recordScan = `-- name: RecordScan :exec
-INSERT INTO sources.scans (source_id, generation, status, discovered, changed, moved, deleted, held_deletions, error, started_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-`
-
-type RecordScanParams struct {
-	SourceID      uuid.UUID
-	Generation    int64
-	Status        string
-	Discovered    int32
-	Changed       int32
-	Moved         int32
-	Deleted       int32
-	HeldDeletions int32
-	Error         *string
-	StartedAt     time.Time
-}
-
-func (q *Queries) RecordScan(ctx context.Context, arg RecordScanParams) error {
-	_, err := q.db.Exec(ctx, recordScan,
-		arg.SourceID,
-		arg.Generation,
-		arg.Status,
-		arg.Discovered,
-		arg.Changed,
-		arg.Moved,
-		arg.Deleted,
-		arg.HeldDeletions,
-		arg.Error,
-		arg.StartedAt,
-	)
-	return err
-}
-
 const recordStep = `-- name: RecordStep :exec
 INSERT INTO sources.pipeline_steps (source_id, external_id, content_hash, step, status, detail)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -510,6 +559,29 @@ func (q *Queries) RecordStep(ctx context.Context, arg RecordStepParams) error {
 		arg.Detail,
 	)
 	return err
+}
+
+const removeSource = `-- name: RemoveSource :execrows
+WITH removed AS (
+  UPDATE sources.sources SET removed_at = $1, status = 'paused' WHERE id = $2 AND removed_at IS NULL RETURNING id
+), gone AS (
+  UPDATE sources.files SET state = 'deleted', updated_at = now() WHERE source_id IN (SELECT id FROM removed)
+)
+SELECT count(*) FROM removed
+`
+
+type RemoveSourceParams struct {
+	RemovedAt *time.Time
+	ID        uuid.UUID
+}
+
+// The source stops being read: it leaves every list, is paused for good measure, and its files count as deleted.
+func (q *Queries) RemoveSource(ctx context.Context, arg RemoveSourceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeSource, arg.RemovedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setFileHash = `-- name: SetFileHash :exec
@@ -546,7 +618,7 @@ func (q *Queries) SetSourceACLSet(ctx context.Context, arg SetSourceACLSetParams
 }
 
 const setSourceStatus = `-- name: SetSourceStatus :execrows
-UPDATE sources.sources SET status = $1 WHERE id = $2
+UPDATE sources.sources SET status = $1 WHERE id = $2 AND removed_at IS NULL
 `
 
 type SetSourceStatusParams struct {
@@ -563,19 +635,33 @@ func (q *Queries) SetSourceStatus(ctx context.Context, arg SetSourceStatusParams
 }
 
 const startScan = `-- name: StartScan :one
-UPDATE sources.sources SET scan_generation = scan_generation + 1 WHERE id = $1
-RETURNING scan_generation, root_path
+WITH bumped AS (
+  UPDATE sources.sources src SET scan_generation = src.scan_generation + 1 WHERE src.id = $1 AND src.removed_at IS NULL
+  RETURNING src.id, src.scan_generation, src.root_path
+), started AS (
+  INSERT INTO sources.scans (source_id, generation, status, discovered, changed, moved, deleted, held_deletions, started_at)
+  SELECT id, scan_generation, 'running', 0, 0, 0, 0, 0, $2 FROM bumped
+  RETURNING id
+)
+SELECT bumped.scan_generation, bumped.root_path, started.id AS scan_id FROM bumped, started
 `
+
+type StartScanParams struct {
+	ID        uuid.UUID
+	StartedAt time.Time
+}
 
 type StartScanRow struct {
 	ScanGeneration int64
 	RootPath       string
+	ScanID         uuid.UUID
 }
 
-func (q *Queries) StartScan(ctx context.Context, id uuid.UUID) (StartScanRow, error) {
-	row := q.db.QueryRow(ctx, startScan, id)
+// Bumps the generation and records the scan as running in one statement; FinishScan closes it.
+func (q *Queries) StartScan(ctx context.Context, arg StartScanParams) (StartScanRow, error) {
+	row := q.db.QueryRow(ctx, startScan, arg.ID, arg.StartedAt)
 	var i StartScanRow
-	err := row.Scan(&i.ScanGeneration, &i.RootPath)
+	err := row.Scan(&i.ScanGeneration, &i.RootPath, &i.ScanID)
 	return i, err
 }
 

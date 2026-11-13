@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/morse/atlas/server/internal/platform/errs"
 )
@@ -55,5 +56,72 @@ func TestTenantJobIsCancelledWithoutTenant(t *testing.T) {
 	var cancel *river.JobCancelError
 	if !errors.As(err, &cancel) || ran {
 		t.Fatalf("a job without tenant must be cancelled before it runs, got %v (ran=%v)", err, ran)
+	}
+}
+
+// failingWorker is a worker whose handler fails with err and records what OnFailed was told.
+func failingWorker(err error, seen *[]Failed[probeArgs]) *tenantWorker[probeArgs] {
+	return &tenantWorker[probeArgs]{job: Job[probeArgs]{
+		Handle: func(context.Context, probeArgs) error { return err },
+		OnFailed: func(_ context.Context, f Failed[probeArgs]) error {
+			*seen = append(*seen, f)
+			return nil
+		},
+	}}
+}
+
+func attemptNumber(attempt int) *river.Job[probeArgs] {
+	return &river.Job[probeArgs]{JobRow: &rivertype.JobRow{Attempt: attempt, MaxAttempts: maxAttempts}, Args: probeArgs{TenantID: uuid.New()}}
+}
+
+func TestOnFailedIsToldOfExhaustionOnlyOnTheLastAttempt(t *testing.T) {
+	var seen []Failed[probeArgs]
+	w := failingWorker(errs.NewTransient(errors.New("503")), &seen)
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_ = w.Work(context.Background(), attemptNumber(attempt))
+	}
+
+	if len(seen) != maxAttempts {
+		t.Fatalf("OnFailed ran %d times, want once per attempt (%d)", len(seen), maxAttempts)
+	}
+	for i, f := range seen {
+		if want := i == maxAttempts-1; f.Exhausted != want {
+			t.Errorf("attempt %d: Exhausted = %v, want %v", i+1, f.Exhausted, want)
+		}
+	}
+}
+
+func TestOnFailedIsNotCalledForAPermanentError(t *testing.T) {
+	var seen []Failed[probeArgs]
+	w := failingWorker(errs.NewPermanent(errs.ReasonCorrupt, errors.New("bad")), &seen)
+
+	err := w.Work(context.Background(), attemptNumber(1))
+
+	var cancel *river.JobCancelError
+	if !errors.As(err, &cancel) || len(seen) != 0 {
+		t.Fatalf("err = %v, OnFailed calls = %d; a permanent error cancels the job and skips the hook", err, len(seen))
+	}
+}
+
+func TestAFailingHookDoesNotHideTheJobsError(t *testing.T) {
+	jobErr := errs.NewTransient(errors.New("503"))
+	w := &tenantWorker[probeArgs]{job: Job[probeArgs]{
+		Handle:   func(context.Context, probeArgs) error { return jobErr },
+		OnFailed: func(context.Context, Failed[probeArgs]) error { return errors.New("db down") },
+	}}
+
+	err := w.Work(context.Background(), attemptNumber(1))
+
+	if !errors.Is(err, jobErr) {
+		t.Fatalf("err = %v, want the job's own error kept so River still retries it", err)
+	}
+}
+
+func TestOnFailedIsNotCalledWhenTheJobSucceeds(t *testing.T) {
+	var seen []Failed[probeArgs]
+	w := failingWorker(nil, &seen)
+	if err := w.Work(context.Background(), attemptNumber(1)); err != nil || len(seen) != 0 {
+		t.Fatalf("err = %v, OnFailed calls = %d; want a quiet success", err, len(seen))
 	}
 }

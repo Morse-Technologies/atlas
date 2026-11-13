@@ -14,6 +14,7 @@ import (
 	"github.com/morse/atlas/server/internal/documents/documentsdb"
 	"github.com/morse/atlas/server/internal/platform/blobs"
 	"github.com/morse/atlas/server/internal/platform/db"
+	"github.com/morse/atlas/server/internal/sources"
 )
 
 // Actor is who asks: the tenant to scope to and the person to put in the audit log.
@@ -41,6 +42,7 @@ type Version struct {
 	State     string
 	IndexedAt time.Time
 	Pages     int
+	Preview   bool // the viewer can show this version
 }
 
 // Provenance says where a metadata value came from.
@@ -55,6 +57,7 @@ type Provenance struct {
 type Document struct {
 	ID               uuid.UUID
 	SourceID         uuid.UUID
+	SourceKind       string
 	CurrentVersionID uuid.UUID
 	Code             string
 	Title            string
@@ -183,7 +186,20 @@ func (l *Library) assemble(ctx context.Context, tx pgx.Tx, in assembly) ([]Docum
 		docs[i] = toDocument(r, in.tax)
 	}
 	attach(docs, versions, prov)
-	return docs, nil
+	return docs, setSourceKinds(ctx, tx, docs)
+}
+
+// setSourceKinds says for each document whether it came from a folder or an upload, with one query.
+func setSourceKinds(ctx context.Context, tx pgx.Tx, docs []Document) error {
+	ids := make([]uuid.UUID, len(docs))
+	for i, d := range docs {
+		ids[i] = d.SourceID
+	}
+	kinds, err := sources.KindsOf(ctx, tx, ids)
+	for i := range docs {
+		docs[i].SourceKind = kinds[docs[i].SourceID]
+	}
+	return err
 }
 
 func attach(docs []Document, versions []documentsdb.ListVersionsOfRow, prov []documentsdb.ListProvenanceOfRow) {
@@ -205,9 +221,9 @@ func attach(docs []Document, versions []documentsdb.ListVersionsOfRow, prov []do
 
 // versionStates maps the pipeline's states to the ones the API shows. A parsed version is not searchable yet, so
 // it still shows as processing.
-var versionStates = map[string]string{"processing": "processing", "parsed": "processing", "indexed": "indexed", "superseded": "superseded", "quarantined": "quarantined"}
+var versionStates = map[string]string{"processing": "processing", "retrying": "retrying", "parsed": "processing", "indexed": "indexed", "superseded": "superseded", "quarantined": "quarantined"}
 
-// toVersion numbers revisions in creation order until metadata extraction reads the real revision (part 2).
+// toVersion names the revision the document states, or numbers versions in creation order when it states none.
 func toVersion(v documentsdb.ListVersionsOfRow, ordinal int) Version {
 	at := v.CreatedAt
 	if v.ParsedAt != nil {
@@ -217,7 +233,14 @@ func toVersion(v documentsdb.ListVersionsOfRow, ordinal int) Version {
 	if v.Pages != nil {
 		pages = int(*v.Pages)
 	}
-	return Version{ID: v.ID, Revision: fmt.Sprintf("v%d", ordinal), State: versionStates[v.State], IndexedAt: at, Pages: pages}
+	return Version{ID: v.ID, Revision: revisionOf(v, ordinal), State: versionStates[v.State], IndexedAt: at, Pages: pages, Preview: HasPreview(v.Mime)}
+}
+
+func revisionOf(v documentsdb.ListVersionsOfRow, ordinal int) string {
+	if v.Revision != "" {
+		return v.Revision
+	}
+	return fmt.Sprintf("v%d", ordinal)
 }
 
 func toDocument(r documentsdb.DocumentsDocument, tax catalog.Snapshot) Document {
@@ -237,6 +260,7 @@ func toDocument(r documentsdb.DocumentsDocument, tax catalog.Snapshot) Document 
 type Counts struct {
 	ByType     map[string]int // current documents per document type
 	Processing int            // versions still being read
+	Retrying   int            // versions whose last step failed and will be tried again
 }
 
 // Counts returns the number of current documents per type and the versions still processing.
@@ -251,9 +275,20 @@ func (l *Library) Counts(ctx context.Context, scope db.Scope) (Counts, error) {
 		for _, r := range rows {
 			out.ByType[r.DocType] = int(r.Total)
 		}
-		processing, err := q.CountProcessing(ctx)
-		out.Processing = int(processing)
-		return err
+		return countPipeline(ctx, q, &out)
 	})
 	return out, err
+}
+
+func countPipeline(ctx context.Context, q *documentsdb.Queries, out *Counts) error {
+	processing, err := q.CountProcessing(ctx)
+	if err != nil {
+		return fmt.Errorf("count processing: %w", err)
+	}
+	retrying, err := q.CountRetrying(ctx)
+	if err != nil {
+		return fmt.Errorf("count retrying: %w", err)
+	}
+	out.Processing, out.Retrying = int(processing), int(retrying)
+	return nil
 }

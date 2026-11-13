@@ -4,14 +4,19 @@ package documents
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/morse/atlas/server/internal/events"
+	"github.com/morse/atlas/server/internal/platform/dbtest"
+	"github.com/morse/atlas/server/internal/platform/errs"
 	"github.com/morse/atlas/server/internal/platform/models/tei"
 )
 
@@ -147,5 +152,96 @@ func TestADeletedDocumentStopsBeingFound(t *testing.T) {
 	p.must(p.m.OnDocumentDeleted(p.ctx, events.DocumentDeleted{TenantID: p.tenantID, SourceID: p.sourceID, ExternalID: externalID}))
 	if chunks, _ := p.countCurrent(version); chunks != 0 {
 		t.Fatalf("%d passages of a deleted document are still searchable", chunks)
+	}
+}
+
+func TestRemovedSourceDocumentsAreNotSearchable(t *testing.T) {
+	p := newPipeline(t, "success")
+	version := p.ingest("revision 1")
+	p.publish(version)
+	p.must(p.m.OnSourceRemoved(p.ctx, events.SourceRemoved{TenantID: p.tenantID, SourceID: p.sourceID}))
+	chunks, vectors := p.countCurrent(version)
+	var listed int
+	p.query("SELECT count(*) FROM documents.v_documents", nil, &listed)
+	if chunks != 0 || vectors != 0 || listed != 0 {
+		t.Fatalf("%d passages, %d vectors and %d listed documents remain after the source was removed", chunks, vectors, listed)
+	}
+}
+
+// chunksNotIn counts the passages whose word index was not built with the configuration (e.g. "documents.atlas_es").
+func (p pipeline) chunksNotIn(config string) int {
+	var n int
+	p.query(`SELECT count(*) FROM documents.chunks WHERE lang <> $1::regconfig`, []any{config}, &n)
+	return n
+}
+
+func (p pipeline) exec(sql string, args ...any) {
+	p.t.Helper()
+	p.must(p.m.DB.InTenantTx(p.ctx, p.tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(p.ctx, sql, args...)
+		return err
+	}))
+}
+
+func (p pipeline) library() *Library {
+	return &Library{DB: p.m.DB, Blobs: p.m.Blobs, Now: time.Now}
+}
+
+func (p pipeline) chooseSearchLanguage(language string) {
+	p.t.Helper()
+	p.must(p.library().SetSearchLanguage(p.ctx, Actor{TenantID: p.tenantID, UserID: uuid.New()}, language))
+}
+
+func TestPassagesAreIndexedWithTheLanguageOfTheOrganization(t *testing.T) {
+	p := newPipeline(t, "success")
+	p.chooseSearchLanguage("en")
+	p.publish(p.ingest("revision 1"))
+	if wrong := p.chunksNotIn("documents.atlas_en"); wrong != 0 {
+		t.Fatalf("%d new passages were not indexed in English", wrong)
+	}
+}
+
+func TestChangingLanguageRelabelsExistingChunks(t *testing.T) {
+	p := newPipeline(t, "success")
+	p.publish(p.ingest("revision 1"))
+	if wrong := p.chunksNotIn("documents.atlas_none"); wrong != 0 {
+		t.Fatalf("%d passages start outside the default configuration", wrong)
+	}
+	p.chooseSearchLanguage("es")
+	p.must(p.m.OnSearchLanguageChanged(p.ctx, events.SearchLanguageChanged{TenantID: p.tenantID}))
+	if wrong := p.chunksNotIn("documents.atlas_es"); wrong != 0 {
+		t.Fatalf("%d passages are still in the old configuration", wrong)
+	}
+	if got, err := p.library().SearchLanguage(p.ctx, Actor{TenantID: p.tenantID, UserID: uuid.New()}); err != nil || got != "es" {
+		t.Fatalf("SearchLanguage() = %q, %v", got, err)
+	}
+}
+
+func TestAnUnknownSearchLanguageIsRefusedAndNothingChanges(t *testing.T) {
+	p := newPipeline(t, "success")
+	err := p.library().SetSearchLanguage(p.ctx, Actor{TenantID: p.tenantID, UserID: uuid.New()}, "klingon")
+	if !errors.Is(err, errs.ErrInvalid) {
+		t.Fatalf("SetSearchLanguage() = %v, want errs.ErrInvalid", err)
+	}
+	dbtest.RequireNoJob(t, p.m.DB, events.SearchLanguageChanged{TenantID: p.tenantID})
+}
+
+// A corpus larger than one batch is re-labelled by a chain of jobs: a full batch queues the next one.
+func TestAFullBatchQueuesTheNextOne(t *testing.T) {
+	p := newPipeline(t, "success")
+	version := p.ingest("revision 1")
+	p.publish(version)
+	p.exec(`INSERT INTO documents.chunks (id, version_id, document_id, ord, page, text, tokens)
+	        SELECT gen_random_uuid(), c.version_id, c.document_id, 1000 + g, 1, 'x', 1
+	        FROM (SELECT version_id, document_id FROM documents.chunks LIMIT 1) c, generate_series(1, $1) g`, relangBatch)
+	p.chooseSearchLanguage("es")
+	args := events.SearchLanguageChanged{TenantID: p.tenantID}
+	p.must(p.m.OnSearchLanguageChanged(p.ctx, args))
+	if left := p.chunksNotIn("documents.atlas_es"); left == 0 {
+		t.Fatal("one run re-labelled more than a batch")
+	}
+	p.must(p.m.OnSearchLanguageChanged(p.ctx, args))
+	if left := p.chunksNotIn("documents.atlas_es"); left != 0 {
+		t.Fatalf("%d passages left after the second run", left)
 	}
 }

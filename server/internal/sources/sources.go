@@ -29,7 +29,8 @@ type Module struct {
 	Logger *slog.Logger
 }
 
-// StatusActive is a source that is scanned and watched; paused and error sources are not.
+// StatusActive is a source that is scanned and watched. A source in error is still scanned (so it recovers
+// by itself) but not watched; a paused one is neither.
 const StatusActive = "active"
 
 // Step outcomes recorded in pipeline_steps.
@@ -144,6 +145,19 @@ func List(ctx context.Context, tx pgx.Tx) ([]Source, error) {
 		out[i] = Source{ID: r.ID, Name: r.Name, Kind: r.Kind, Root: r.RootPath, Status: r.Status, LastScanAt: r.LastScanAt, LastError: r.LastError, Readers: readers}
 	}
 	return out, nil
+}
+
+// KindsOf returns the kind of each source in ids (a removed source is still known by its documents' history).
+func KindsOf(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	rows, err := sourcesdb.New(tx).GetSourceKinds(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("source kinds: %w", err)
+	}
+	kinds := make(map[uuid.UUID]string, len(rows))
+	for _, r := range rows {
+		kinds[r.ID] = r.Kind
+	}
+	return kinds, nil
 }
 
 // RequestRescan schedules a scan of an existing source.

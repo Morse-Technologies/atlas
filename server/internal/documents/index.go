@@ -55,6 +55,9 @@ func (m *Module) Chunk(ctx context.Context, args events.VersionChunk) error {
 }
 
 func storeChunks(ctx context.Context, tx pgx.Tx, set chunkSet) error {
+	if err := clearRetrying(ctx, tx, set.v.row.ID); err != nil {
+		return err
+	}
 	if err := replaceChunks(ctx, tx, set); err != nil {
 		return err
 	}
@@ -178,6 +181,9 @@ func (m *Module) Embed(ctx context.Context, args events.VersionEmbed) error {
 		return err
 	}
 	return m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
+		if err := clearRetrying(ctx, tx, v.row.ID); err != nil {
+			return err
+		}
 		if err := m.storeVectors(ctx, tx, vectors); err != nil {
 			return err
 		}
@@ -249,6 +255,9 @@ func (m *Module) Index(ctx context.Context, args events.VersionIndex) error {
 		return err
 	}
 	return m.DB.InTenantTx(ctx, args.TenantID, func(tx pgx.Tx) error {
+		if err := clearRetrying(ctx, tx, v.row.ID); err != nil {
+			return err
+		}
 		status, err := publish(ctx, tx, v)
 		if err != nil {
 			return err

@@ -26,7 +26,7 @@ const (
 // Register adds the sources jobs to a worker process.
 func (m *Module) Register(workers *river.Workers) {
 	jobs.AddTenantJob(workers, jobs.Job[events.SourceRescan]{Handle: m.Rescan, Timeout: rescanTimeout})
-	jobs.AddTenantJob(workers, jobs.Job[events.VersionFetch]{Handle: m.Fetch, Timeout: fetchTimeout})
+	jobs.AddTenantJob(workers, jobs.Job[events.VersionFetch]{Handle: m.Fetch, Timeout: fetchTimeout, OnFailed: m.onFetchFailed})
 	// The tick spans tenants: it reads the tenant registry, then scopes each tenant's query by RLS.
 	river.AddWorker(workers, river.WorkFunc(func(ctx context.Context, _ *river.Job[events.RescanDueSources]) error {
 		return m.EnqueueDueRescans(ctx)

@@ -42,11 +42,24 @@ type SourceRescan struct {
 	// Manual marks a scan a person asked for. It is a different job from the same scan found by the watcher or the
 	// timer a moment ago, so pressing "Sync" is never swallowed by the one-minute deduplication.
 	Manual bool `json:"manual"`
+	// RequestID makes a scan asked for by a person its own job: deduplication is by arguments, so without it
+	// two uploads a few seconds apart would leave the second one unscanned until the next timed scan.
+	RequestID uuid.UUID `json:"request_id"`
 }
 
 func (SourceRescan) Kind() string                 { return "source.rescan.v1" }
 func (SourceRescan) InsertOpts() river.InsertOpts { return dedupedOptsIn(QueueMaint) }
 func (a SourceRescan) Tenant() uuid.UUID          { return a.TenantID }
+
+// SourceRemoved says an administrator stopped reading a source. documents retires everything that came from it.
+type SourceRemoved struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	SourceID uuid.UUID `json:"source_id"`
+}
+
+func (SourceRemoved) Kind() string                 { return "source.removed.v1" }
+func (SourceRemoved) InsertOpts() river.InsertOpts { return optsIn(QueueMaint) }
+func (a SourceRemoved) Tenant() uuid.UUID          { return a.TenantID }
 
 // RescanDueSources is the periodic tick that enqueues SourceRescan for every source due. It spans tenants.
 type RescanDueSources struct{}
@@ -184,6 +197,16 @@ func (DocumentChanged) Kind() string                 { return "document.changed.
 func (DocumentChanged) InsertOpts() river.InsertOpts { return dedupedOptsIn(QueueGraph) }
 func (a DocumentChanged) Tenant() uuid.UUID          { return a.TenantID }
 
+// SearchLanguageChanged says the organization chose another language for word search: its passages are re-labelled,
+// a batch at a time, until none is left. Each run queues the next while it finds passages to change.
+type SearchLanguageChanged struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+func (SearchLanguageChanged) Kind() string                 { return "documents.search_language.v1" }
+func (SearchLanguageChanged) InsertOpts() river.InsertOpts { return optsIn(QueueIndex) }
+func (a SearchLanguageChanged) Tenant() uuid.UUID          { return a.TenantID }
+
 // AlertsEvaluate checks every alert rule over a whole tenant.
 type AlertsEvaluate struct {
 	TenantID uuid.UUID `json:"tenant_id"`
@@ -198,3 +221,18 @@ type AlertsNightly struct{}
 
 func (AlertsNightly) Kind() string                 { return "alerts.nightly.v1" }
 func (AlertsNightly) InsertOpts() river.InsertOpts { return optsIn(QueueGraph) }
+
+// MaintDue is the daily tick that queues MaintTenant for every tenant. It spans tenants.
+type MaintDue struct{}
+
+func (MaintDue) Kind() string                 { return "maint.due.v1" }
+func (MaintDue) InsertOpts() river.InsertOpts { return optsIn(QueueMaint) }
+
+// MaintTenant asks for the cleanup of what one tenant no longer needs to keep.
+type MaintTenant struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+func (MaintTenant) Kind() string                 { return "maint.tenant.v1" }
+func (MaintTenant) InsertOpts() river.InsertOpts { return optsIn(QueueMaint) }
+func (a MaintTenant) Tenant() uuid.UUID          { return a.TenantID }
