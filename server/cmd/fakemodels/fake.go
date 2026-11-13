@@ -144,8 +144,15 @@ func handleModels(w http.ResponseWriter, _ *http.Request) {
 // docBlock finds the first numbered passage Atlas put in the prompt: <doc id=".." n="1" ..>header\ntext</doc ..>.
 var docBlock = regexp.MustCompile(`(?s)<doc id="[^"]*" n="1"[^>]*>\n(.*?)\n</doc id=`)
 
-// answerFrom writes an answer that quotes the first sentence of the first passage and cites it.
+// followUp finds the two questions Atlas puts in a rewrite request (internal/search/followup.go).
+var followUp = regexp.MustCompile(`(?s)^Previous question: (.*)\nLast question: (.*)$`)
+
+// answerFrom writes an answer that quotes the first sentence of the first passage and cites it. A rewrite request
+// gets both questions joined, which has the words of each.
 func answerFrom(prompt string) string {
+	if q := followUp.FindStringSubmatch(prompt); q != nil {
+		return q[1] + " " + q[2]
+	}
 	m := docBlock.FindStringSubmatch(prompt)
 	if m == nil {
 		return noAnswerText

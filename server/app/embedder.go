@@ -28,10 +28,16 @@ type embedding struct {
 func newEmbedding(cfg config.Embedding) (embedding, error) {
 	switch cfg.API {
 	case embedAPITEI:
-		client := tei.New(cfg.URL)
+		client := tei.New(cfg.URL).Measured("embed")
+		if cfg.Timeout > 0 {
+			client.WithTimeout(cfg.Timeout)
+		}
 		return embedding{embedder: client, health: client.Health, tokens: client}, nil
 	case embedAPIOllama:
 		client := ollama.New(cfg.URL, cfg.Model)
+		if cfg.Timeout > 0 {
+			client.WithTimeout(cfg.Timeout)
+		}
 		return embedding{embedder: client, health: client.Health}, nil
 	}
 	return embedding{}, fmt.Errorf("ATLAS_EMBED_API %q is not %s or %s", cfg.API, embedAPITEI, embedAPIOllama)

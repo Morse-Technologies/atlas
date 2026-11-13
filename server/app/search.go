@@ -41,7 +41,7 @@ type modelURLs struct {
 func connectModels(cfg *search.Config, urls modelURLs) []httpapi.Check {
 	var checks []httpapi.Check
 	if urls.rerank != "" {
-		client := tei.New(urls.rerank).WithTimeout(urls.rerankTimeout)
+		client := tei.New(urls.rerank).Measured("rerank").WithTimeout(urls.rerankTimeout)
 		cfg.Reranker, checks = client, append(checks, httpapi.Check{Name: "rerank", Probe: client.Health})
 	}
 	if urls.llm != "" {

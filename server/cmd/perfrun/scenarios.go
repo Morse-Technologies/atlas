@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -21,6 +22,11 @@ const (
 	deepPages    = 5  // pages followed by the deep listing
 	httpOK       = http.StatusOK
 	listKinds    = 3
+	// The server admits 20 questions a minute per person (asksPerWindow in server/internal/httpapi/ratelimit.go).
+	// One every 3.5 s is about 17 a minute: the fastest pace a person is allowed, with room for the window edge.
+	askPause = 3500 * time.Millisecond
+	// What a run says, and fails with, when the server refused questions: its figures do not measure Atlas.
+	refusedWith429 = "questions were refused with 429: this run is not valid"
 )
 
 type question struct {
@@ -39,17 +45,25 @@ func readQuestions(path string) ([]question, error) {
 
 // load is one scenario running: who, for how long, and what has been measured.
 type load struct {
-	c         *client
-	questions []question
-	users     int
-	duration  time.Duration
-	samples   map[string]*sample
-	checked   atomic.Int64
-	hits      atomic.Int64
+	clients     []*client // one per simulated person, each signed in as a different account
+	questions   []question
+	users       int
+	duration    time.Duration
+	samples     map[string]*sample
+	checked     atomic.Int64
+	hits        atomic.Int64
+	rateLimited atomic.Int64
 }
 
-func newLoad(c *client, questions []question) *load {
-	l := &load{c: c, questions: questions, samples: map[string]*sample{}}
+// visitor is one simulated person: their own session, their own random choices and the moment they may ask next.
+type visitor struct {
+	c       *client
+	rng     *rand.Rand
+	nextAsk time.Time
+}
+
+func newLoad(clients []*client, questions []question) *load {
+	l := &load{clients: clients, questions: questions, samples: map[string]*sample{}}
 	for _, kind := range []string{"ask first sources", "ask first word", "ask complete", "list documents", "filter documents", "page deep", "overview"} {
 		l.samples[kind] = &sample{}
 	}
@@ -57,7 +71,7 @@ func newLoad(c *client, questions []question) *load {
 }
 
 // run starts the users and lets each repeat step until the time is up.
-func (l *load) run(step func(*rand.Rand)) result {
+func (l *load) run(step func(*visitor)) result {
 	var wg sync.WaitGroup
 	started := time.Now()
 	deadline := started.Add(l.duration)
@@ -65,9 +79,9 @@ func (l *load) run(step func(*rand.Rand)) result {
 		wg.Add(1)
 		go func(seed uint64) {
 			defer wg.Done()
-			rng := rand.New(rand.NewPCG(seed, seed+1))
+			v := &visitor{c: l.clients[seed-1], rng: rand.New(rand.NewPCG(seed, seed+1))}
 			for time.Now().Before(deadline) {
-				step(rng)
+				step(v)
 			}
 		}(uint64(i + 1))
 	}
@@ -85,20 +99,30 @@ func (l *load) nonEmpty() map[string]*sample {
 	return out
 }
 
-func (l *load) ask(rng *rand.Rand) {
-	q := l.questions[rng.IntN(len(l.questions))]
-	t, err := l.c.ask(q.Text)
+func (l *load) ask(v *visitor) {
+	v.waitForTurn()
+	q := l.questions[v.rng.IntN(len(l.questions))]
+	t, err := v.c.ask(q.Text)
+	if errors.Is(err, errRateLimited) {
+		l.rateLimited.Add(1)
+	}
 	l.samples["ask first sources"].add(t.Meta, err)
 	l.samples["ask first word"].add(t.FirstToken, err)
 	l.samples["ask complete"].add(t.Done, err)
-	if err == nil && t.Outcome == "answered" && rng.IntN(recallEvery) == 0 {
-		l.checkTopic(q, t)
+	if err == nil && t.Outcome == "answered" && v.rng.IntN(recallEvery) == 0 {
+		l.checkTopic(v, q, t)
 	}
 }
 
+// waitForTurn holds a person back until they may ask again, so none asks faster than the server allows.
+func (v *visitor) waitForTurn() {
+	time.Sleep(time.Until(v.nextAsk))
+	v.nextAsk = time.Now().Add(askPause)
+}
+
 // checkTopic asks for the title of the first cited document: it must be about the question's topic.
-func (l *load) checkTopic(q question, t timings) {
-	status, body, _, err := l.c.call(http.MethodGet, "/documents/"+t.Cited[0], nil)
+func (l *load) checkTopic(v *visitor, q question, t timings) {
+	status, body, _, err := v.c.call(http.MethodGet, "/documents/"+t.Cited[0], nil)
 	if err != nil || status != httpOK {
 		return
 	}
@@ -108,25 +132,25 @@ func (l *load) checkTopic(q question, t timings) {
 	}
 }
 
-func (l *load) listFirstPage(_ *rand.Rand) {
-	status, _, d, err := l.c.call(http.MethodGet, fmt.Sprintf("/documents?limit=%d", listPageSize), nil)
+func (l *load) listFirstPage(v *visitor) {
+	status, _, d, err := v.c.call(http.MethodGet, fmt.Sprintf("/documents?limit=%d", listPageSize), nil)
 	l.samples["list documents"].add(d, statusErr(status, err))
 }
 
-func (l *load) filter(rng *rand.Rand) {
-	word := fmt.Sprintf("tema%03d", rng.IntN(topics))
-	status, _, d, err := l.c.call(http.MethodGet, fmt.Sprintf("/documents?limit=%d&q=%s", listPageSize, word), nil)
+func (l *load) filter(v *visitor) {
+	word := fmt.Sprintf("tema%03d", v.rng.IntN(topics))
+	status, _, d, err := v.c.call(http.MethodGet, fmt.Sprintf("/documents?limit=%d&q=%s", listPageSize, word), nil)
 	l.samples["filter documents"].add(d, statusErr(status, err))
 }
 
 const topics = 200
 
-func (l *load) deepPage(_ *rand.Rand) {
+func (l *load) deepPage(v *visitor) {
 	cursor := ""
 	started := time.Now()
 	var err error
 	for range deepPages {
-		cursor, err = l.nextPage(cursor)
+		cursor, err = v.c.nextPage(cursor)
 		if err != nil || cursor == "" {
 			break
 		}
@@ -134,8 +158,8 @@ func (l *load) deepPage(_ *rand.Rand) {
 	l.samples["page deep"].add(time.Since(started), err)
 }
 
-func (l *load) overview(_ *rand.Rand) {
-	status, _, d, err := l.c.call(http.MethodGet, "/stats/overview", nil)
+func (l *load) overview(v *visitor) {
+	status, _, d, err := v.c.call(http.MethodGet, "/stats/overview", nil)
 	l.samples["overview"].add(d, statusErr(status, err))
 }
 
@@ -147,37 +171,41 @@ func statusErr(status int, err error) error {
 }
 
 // mixed is what a team does: mostly asks, some browsing, the odd look at the panel.
-func (l *load) mixed(rng *rand.Rand) {
-	switch roll := rng.IntN(percent); {
+func (l *load) mixed(v *visitor) {
+	switch roll := v.rng.IntN(percent); {
 	case roll < askShare:
-		l.ask(rng)
+		l.ask(v)
 	case roll < listShare:
-		if rng.IntN(2) == 0 {
-			l.listFirstPage(rng)
+		if v.rng.IntN(2) == 0 {
+			l.listFirstPage(v)
 		} else {
-			l.filter(rng)
+			l.filter(v)
 		}
 	default:
-		l.overview(rng)
+		l.overview(v)
 	}
 }
 
 func (l *load) notes() []string {
-	if l.checked.Load() == 0 {
-		return nil
+	notes := []string{fmt.Sprintf("each person asks at most once every %s (the server allows 20 a minute)", askPause)}
+	if refused := l.rateLimited.Load(); refused > 0 {
+		notes = append(notes, fmt.Sprintf("%d %s", refused, refusedWith429))
 	}
-	return []string{fmt.Sprintf("recall of the first cited document: %d of %d checked answers were about the question's topic",
-		l.hits.Load(), l.checked.Load())}
+	if l.checked.Load() > 0 {
+		notes = append(notes, fmt.Sprintf("recall of the first cited document: %d of %d checked answers were about the question's topic",
+			l.hits.Load(), l.checked.Load()))
+	}
+	return notes
 }
 
 // browse is a person going through the documents: the first page, a filter, and now and then far down the list.
-func (l *load) browse(rng *rand.Rand) {
-	switch rng.IntN(listKinds) {
+func (l *load) browse(v *visitor) {
+	switch v.rng.IntN(listKinds) {
 	case 0:
-		l.listFirstPage(rng)
+		l.listFirstPage(v)
 	case 1:
-		l.filter(rng)
+		l.filter(v)
 	default:
-		l.deepPage(rng)
+		l.deepPage(v)
 	}
 }

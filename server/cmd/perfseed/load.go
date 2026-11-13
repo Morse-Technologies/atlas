@@ -19,7 +19,7 @@ const (
 	copyBatch   = 20000
 	approxToken = 4 // characters per token, as the pipeline estimates without a tokenizer
 	fileBytes   = 1 << 20
-	readerEvery = 3 // one restricted source in this many lists the reader
+	readerEvery = 3 // one restricted source in this many lists the readers
 	schema      = "documents"
 )
 
@@ -27,14 +27,14 @@ var docTypes = [...]string{"procedure", "work_instruction", "manual", "standard"
 
 // loader writes one corpus into a tenant.
 type loader struct {
-	pool   *pgxpool.Pool
-	tenant uuid.UUID
-	prof   profile
-	vocab  vocabulary
-	reader uuid.UUID    // the person who may read some of the restricted sources
-	sets   []*uuid.UUID // the ACL set of each source (nil: everyone)
-	open   uuid.UUID    // the default set: what the passages of an open source carry
-	srcs   []uuid.UUID
+	pool    *pgxpool.Pool
+	tenant  uuid.UUID
+	prof    profile
+	vocab   vocabulary
+	readers []uuid.UUID  // the people who may read some of the restricted sources
+	sets    []*uuid.UUID // the ACL set of each source (nil: everyone)
+	open    uuid.UUID    // the default set: what the passages of an open source carry
+	srcs    []uuid.UUID
 }
 
 type docRow struct {
@@ -79,8 +79,8 @@ func (l *loader) analyze(ctx context.Context) error {
 	return l.exec(ctx, "analyze", "ANALYZE")
 }
 
-// makeSources creates the sources. The first ones are restricted: every third lists the reader, the others
-// somebody else, so the reader's filter keeps a minority of the passages (the hard case for the vector index).
+// makeSources creates the sources. The first ones are restricted: every third lists the readers, the others
+// somebody else, so a reader's filter keeps a minority of the passages (the hard case for the vector index).
 func (l *loader) makeSources(ctx context.Context) error {
 	if err := l.pool.QueryRow(ctx, `INSERT INTO access.acl_sets (tenant_id, origin, is_default) VALUES ($1, 'core', true)
 		ON CONFLICT (tenant_id) WHERE is_default DO UPDATE SET origin = 'core' RETURNING id`, l.tenant).Scan(&l.open); err != nil {
@@ -112,12 +112,12 @@ func (l *loader) restrictedSet(ctx context.Context, i int) (*uuid.UUID, error) {
 	if i >= l.prof.Restricted {
 		return nil, nil
 	}
-	reader := uuid.New()
+	allow := []uuid.UUID{uuid.New()}
 	if i%readerEvery == 0 {
-		reader = l.reader
+		allow = l.readers
 	}
 	var id uuid.UUID
-	err := l.pool.QueryRow(ctx, `INSERT INTO access.acl_sets (tenant_id, origin, allow) VALUES ($1, 'source', $2) RETURNING id`, l.tenant, []uuid.UUID{reader}).Scan(&id)
+	err := l.pool.QueryRow(ctx, `INSERT INTO access.acl_sets (tenant_id, origin, allow) VALUES ($1, 'source', $2) RETURNING id`, l.tenant, allow).Scan(&id)
 	return &id, err
 }
 
@@ -245,9 +245,10 @@ func vectorLiteral(v []float32) string {
 // newLoader is a loader with a seeded random source, so a corpus is the same every time.
 // target is where a corpus goes and who may read its restricted part.
 type target struct {
-	tenant, reader uuid.UUID
+	tenant  uuid.UUID
+	readers []uuid.UUID
 }
 
 func newLoader(pool *pgxpool.Pool, t target, p profile) *loader {
-	return &loader{pool: pool, tenant: t.tenant, reader: t.reader, prof: p, vocab: vocabulary{rng: rand.New(rand.NewPCG(1, 2))}}
+	return &loader{pool: pool, tenant: t.tenant, readers: t.readers, prof: p, vocab: vocabulary{rng: rand.New(rand.NewPCG(1, 2))}}
 }

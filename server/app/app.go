@@ -40,6 +40,7 @@ var commands = map[string]command{
 	"audit":       runAudit,
 	"healthcheck": runHealthcheck,
 	"bench":       runBench,
+	"eval":        runEval,
 }
 
 // Main runs the subcommand in args and returns the process exit code. SIGINT and SIGTERM cancel ctx.

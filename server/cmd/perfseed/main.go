@@ -3,7 +3,7 @@
 // finds that topic's passages by words and by meaning. It writes straight to Postgres (no document parsing), as
 // the database owner, and the corpus is the same every time. Never run it against real data.
 //
-//	perfseed -db postgres://atlas_owner:...@127.0.0.1:54329/atlas -tenant UUID -reader UUID -profile pilot -questions q.json
+//	perfseed -db postgres://atlas_owner:...@127.0.0.1:54329/atlas -tenant UUID -readers UUID,UUID -profile pilot -questions q.json
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,14 +32,14 @@ func main() {
 }
 
 type options struct {
-	db, tenant, reader, profile, questions string
+	db, tenant, readers, profile, questions string
 }
 
 func parse() options {
 	var o options
 	flag.StringVar(&o.db, "db", "", "owner connection URL of the database")
 	flag.StringVar(&o.tenant, "tenant", "", "tenant id (create the organization first with /setup)")
-	flag.StringVar(&o.reader, "reader", "", "id of the person who may read the restricted sources")
+	flag.StringVar(&o.readers, "readers", "", "ids of the people (separated by commas) who may read the restricted sources")
 	flag.StringVar(&o.profile, "profile", "small", "small, pilot, skew or multi-acl")
 	flag.StringVar(&o.questions, "questions", "perf-questions.json", "where to write the questions the load test asks")
 	flag.Parse()
@@ -81,11 +82,24 @@ func newLoaderFor(dest target, prof profile) func(*pgxpool.Pool) *loader {
 
 func (o options) destination() (target, error) {
 	tenant, errTenant := uuid.Parse(o.tenant)
-	reader, errReader := uuid.Parse(o.reader)
-	if o.db == "" || errTenant != nil || errReader != nil {
-		return target{}, fmt.Errorf("-db, -tenant and -reader are required (tenant: %v, reader: %v)", errTenant, errReader)
+	readers, errReaders := parseReaders(o.readers)
+	if o.db == "" || errTenant != nil || errReaders != nil {
+		return target{}, fmt.Errorf("-db, -tenant and -readers are required (tenant: %v, readers: %v)", errTenant, errReaders)
 	}
-	return target{tenant: tenant, reader: reader}, nil
+	return target{tenant: tenant, readers: readers}, nil
+}
+
+// parseReaders reads the ids of the people who may read the restricted sources; an empty list or a bad id is an error.
+func parseReaders(list string) ([]uuid.UUID, error) {
+	var readers []uuid.UUID
+	for _, text := range strings.Split(list, ",") {
+		id, err := uuid.Parse(text)
+		if err != nil {
+			return nil, fmt.Errorf("reader id %q: %w", text, err)
+		}
+		readers = append(readers, id)
+	}
+	return readers, nil
 }
 
 // report prints how big the corpus is on disk, the numbers a sizing guide needs.

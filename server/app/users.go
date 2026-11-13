@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/morse/atlas/server/internal/access"
 	"github.com/morse/atlas/server/internal/audit"
 )
@@ -29,10 +31,11 @@ func runUser(ctx context.Context, args []string) error {
 }
 
 var auditCommands = map[string]func(context.Context, cliSession, []string) error{
-	"verify": auditVerify,
+	"verify":        auditVerify,
+	"verify-export": auditVerifyExport,
 }
 
-// runAudit: atlas audit verify
+// runAudit: atlas audit verify | verify-export --file F --signature S [--public-key K]
 func runAudit(ctx context.Context, args []string) error {
 	return runSubcommand(ctx, subcommandCall{args: args, table: auditCommands})
 }
@@ -50,7 +53,7 @@ func userAdd(ctx context.Context, s cliSession, args []string) error {
 	if err != nil {
 		return err
 	}
-	creds, err := accounts.CreateUser(ctx, s.tenantID, access.NewUser{Name: *name, Email: *email, Roles: parseRoles(*roles), WithoutTOTP: *noTOTP})
+	creds, err := accounts.CreateUser(ctx, access.By{TenantID: s.tenantID}, access.NewUser{Name: *name, Email: *email, Roles: parseRoles(*roles), WithoutTOTP: *noTOTP})
 	if err != nil {
 		return err
 	}
@@ -69,23 +72,22 @@ func parseRoles(list string) []access.Role {
 }
 
 func userResetPassword(ctx context.Context, s cliSession, args []string) error {
-	email, err := singleArg(args, "usage: atlas user reset-password EMAIL")
-	if err != nil {
-		return err
-	}
-	accounts, err := newAccounts(s.db)
-	if err != nil {
-		return err
-	}
-	creds, err := accounts.ResetPassword(ctx, s.tenantID, email)
-	if err == nil {
-		printCredentials(creds)
-	}
-	return err
+	return resetFromConsole(ctx, s, consoleReset{args: args, usage: "usage: atlas user reset-password EMAIL", run: (*access.Service).ResetPassword})
 }
 
 func userResetTOTP(ctx context.Context, s cliSession, args []string) error {
-	email, err := singleArg(args, "usage: atlas user reset-totp EMAIL")
+	return resetFromConsole(ctx, s, consoleReset{args: args, usage: "usage: atlas user reset-totp EMAIL", run: (*access.Service).ResetTOTP})
+}
+
+// consoleReset is one recovery command: the account is named by e-mail, and the secret it yields is printed once.
+type consoleReset struct {
+	args  []string
+	usage string
+	run   func(*access.Service, context.Context, access.By, uuid.UUID) (access.Credentials, error)
+}
+
+func resetFromConsole(ctx context.Context, s cliSession, r consoleReset) error {
+	email, err := singleArg(r.args, r.usage)
 	if err != nil {
 		return err
 	}
@@ -93,7 +95,12 @@ func userResetTOTP(ctx context.Context, s cliSession, args []string) error {
 	if err != nil {
 		return err
 	}
-	creds, err := accounts.ResetTOTP(ctx, s.tenantID, email)
+	by := access.By{TenantID: s.tenantID}
+	id, err := accounts.UserIDByEmail(ctx, s.tenantID, email)
+	if err != nil {
+		return err
+	}
+	creds, err := r.run(accounts, ctx, by, id)
 	if err == nil {
 		printCredentials(creds)
 	}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,9 @@ const (
 	apiPath        = "/api/v1"
 	idleConns      = 256
 )
+
+// errRateLimited is an answer of 429: the server's per-person limit refused the question.
+var errRateLimited = errors.New("rate limited (429)")
 
 // client talks to a running Atlas the way a browser does: one cookie, Caddy's own certificate trusted.
 type client struct {
@@ -97,10 +101,20 @@ func (c *client) ask(question string) (timings, error) {
 		return timings{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return timings{}, fmt.Errorf("ask: status %d", resp.StatusCode)
+	if err := askStatusError(resp.StatusCode); err != nil {
+		return timings{}, err
 	}
 	return readStream(resp.Body, started)
+}
+
+func askStatusError(status int) error {
+	switch status {
+	case http.StatusOK:
+		return nil
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("ask: %w", errRateLimited)
+	}
+	return fmt.Errorf("ask: status %d", status)
 }
 
 func readStream(body io.Reader, started time.Time) (timings, error) {

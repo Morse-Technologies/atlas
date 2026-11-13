@@ -2,12 +2,12 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -19,15 +19,18 @@ import (
 	"github.com/morse/atlas/server/internal/graph"
 	"github.com/morse/atlas/server/internal/httpapi"
 	"github.com/morse/atlas/server/internal/jobs"
+	"github.com/morse/atlas/server/internal/maint"
 	"github.com/morse/atlas/server/internal/overview"
 	"github.com/morse/atlas/server/internal/platform/blobs"
 	"github.com/morse/atlas/server/internal/platform/config"
 	"github.com/morse/atlas/server/internal/platform/db"
 	"github.com/morse/atlas/server/internal/platform/idempotency"
 	"github.com/morse/atlas/server/internal/platform/license"
+	"github.com/morse/atlas/server/internal/platform/metrics"
 	"github.com/morse/atlas/server/internal/platform/models/docling"
 	"github.com/morse/atlas/server/internal/platform/models/gotenberg"
 	"github.com/morse/atlas/server/internal/platform/schema"
+	"github.com/morse/atlas/server/internal/platform/signing"
 	"github.com/morse/atlas/server/internal/search"
 	"github.com/morse/atlas/server/internal/sources"
 )
@@ -94,6 +97,9 @@ func runAPI(ctx context.Context, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if err := startMetrics(ctx, d); err != nil {
+		return err
+	}
 	return serveUntilDone(ctx, server)
 }
 
@@ -103,11 +109,19 @@ func buildAPI(d deps, addr string) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	warnIfAnswersAreDegraded(parts.deploy)
 	queue, err := jobs.NewClient(d.db.Pool, jobs.Setup{}) // insert-only: the API queues work, workers run it
 	if err != nil {
 		return nil, err
 	}
 	return newHTTPServer(addr, apiServer(d, parts), queue), nil
+}
+
+// warnIfAnswersAreDegraded tells the operator at start-up that the models installed do not allow written answers.
+func warnIfAnswersAreDegraded(d httpapi.Deployment) {
+	if d.AnswerMode != string(search.ModeGenerated) {
+		slog.Warn("answers are degraded", "mode", d.AnswerMode, "gaps", d.AnswerGaps)
+	}
 }
 
 func newHTTPServer(addr string, api *httpapi.Server, queue *jobs.Client) *http.Server {
@@ -140,6 +154,7 @@ type apiParts struct {
 	search   *search.Service
 	licenses *license.Holder
 	deploy   httpapi.Deployment
+	signing  *signing.Keys
 	checks   []httpapi.Check
 }
 
@@ -156,22 +171,24 @@ func newAPIParts(d deps) (apiParts, error) {
 	if err != nil {
 		return apiParts{}, err
 	}
-	licenses, err := newLicenses()
+	licenses, err := newLicenses(d.blobDir)
 	if err != nil {
 		return apiParts{}, err
 	}
-	deploy, err := newDeployment()
+	deploy, err := newDeployment(answers.Capabilities())
 	admin := sources.NewAdmin(d.db, filepath.Join(d.blobDir, uploadsDirName), roots.Roots)
 	admin.ApplyAccess = documents.ApplyAccess
-	return apiParts{accounts: accounts, roots: roots.Roots, admin: admin, search: answers, checks: checks, licenses: licenses, deploy: deploy}, err
+	return apiParts{accounts: accounts, roots: roots.Roots, admin: admin, search: answers, checks: checks, licenses: licenses, deploy: deploy, signing: &signing.Keys{DB: d.db, Sealer: accounts.Box}}, err
 }
 
 func apiServer(d deps, parts apiParts) *httpapi.Server {
+	library := documents.NewLibrary(d.db, d.blobs)
 	return &httpapi.Server{
 		Version: Version, SchemaVersion: d.schema, Checks: append(coreChecks(d), parts.checks...),
-		Accounts: parts.accounts, Audit: &audit.Service{DB: d.db}, Answers: parts.search,
-		Sources:     parts.admin,
-		Documents:   documents.NewLibrary(d.db, d.blobs),
+		AnswerMode: parts.deploy.AnswerMode, Metrics: metrics.Default,
+		Accounts: parts.accounts, Audit: &audit.Service{DB: d.db}, Signing: parts.signing, Answers: parts.search,
+		Sources:   parts.admin,
+		Documents: library, SearchLanguages: library,
 		Taxonomy:    &catalog.Service{DB: d.db},
 		Idempotency: idempotency.NewStore(d.db), Licenses: parts.licenses, Graph: graph.NewService(d.db), Panel: newPanel(d, parts), Deployment: parts.deploy,
 	}
@@ -217,21 +234,33 @@ func runWorker(ctx context.Context, _ []string) error {
 		return err
 	}
 	defer d.db.Pool.Close()
-	workers, err := registerWorkers(d, logger)
+	client, err := newWorkerClient(d, logger)
 	if err != nil {
 		return err
 	}
-	client, err := jobs.NewClient(d.db.Pool, jobs.Setup{Workers: workers, Periodic: append(sources.PeriodicJobs(), graph.PeriodicJobs()...), Logger: logger})
-	if err != nil {
+	if err := startMetrics(ctx, d); err != nil {
 		return err
 	}
 	return runClientUntilDone(ctx, client)
+}
+
+func newWorkerClient(d deps, logger *slog.Logger) (*jobs.Client, error) {
+	workers, err := registerWorkers(d, logger)
+	if err != nil {
+		return nil, err
+	}
+	return jobs.NewClient(d.db.Pool, jobs.Setup{Workers: workers, Periodic: periodicJobs(), Logger: logger})
+}
+
+func periodicJobs() []*river.PeriodicJob {
+	return slices.Concat(sources.PeriodicJobs(), graph.PeriodicJobs(), maint.PeriodicJobs())
 }
 
 func runClientUntilDone(ctx context.Context, client *jobs.Client) error {
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("start worker: %w", err)
 	}
+	go beatWhileRunning(ctx, client.Stopped(), heartbeatFile)
 	<-ctx.Done()
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
@@ -290,7 +319,19 @@ func registerWorkers(d deps, logger *slog.Logger) (*river.Workers, error) {
 	docs.Register(workers)
 	(&search.Service{Config: search.Config{DB: d.db}}).Register(workers)
 	graph.NewService(d.db).Register(workers)
+	newMaint(d, docs).Register(workers)
 	return workers, nil
+}
+
+// newMaint gathers the purgers of the modules that keep data with a limited life. A purge takes the tenant and the
+// time, so each module is built here with what it needs and no secret key.
+func newMaint(d deps, docs *documents.Module) *maint.Service {
+	return &maint.Service{DB: d.db, Now: time.Now, Purgers: []maint.Purger{
+		{Name: "search", Purge: (&search.Service{Config: search.Config{DB: d.db}}).PurgeExpired},
+		{Name: "access", Purge: (&access.Service{DB: d.db}).PurgeExpired},
+		{Name: "idempotency", Purge: idempotency.NewStore(d.db).PurgeOld},
+		{Name: "documents", Purge: docs.PurgeDeleted},
+	}}
 }
 
 // useEmbedder gives the documents module the embedding client when ATLAS_EMBED_URL is set.
@@ -317,25 +358,28 @@ func withJobs(queue *jobs.Client, next http.Handler) http.Handler {
 	})
 }
 
-// newLicenses reads the license settings. With a file but no public key the server refuses to start: it could
-// never verify the file, and silently running as Core would hide a configuration mistake.
-func newLicenses() (*license.Holder, error) {
+// licenseFileName is where an installed license is kept inside the blob volume's license folder.
+const licenseFileName = "atlas-license.json"
+
+// newLicenses follows the license file in force. The key that checks a file is built into the binary, so an empty
+// key (until Morse's arrives) means no file validates and the installation stays Core.
+func newLicenses(blobDir string) (*license.Holder, error) {
 	cfg, err := config.Load[config.License]()
 	if err != nil {
 		return nil, err
 	}
-	if cfg.File != "" && cfg.PublicKey == "" {
-		return nil, errors.New("ATLAS_LICENSE_FILE is set but ATLAS_LICENSE_PUBLIC_KEY is not")
-	}
-	key, err := base64.StdEncoding.DecodeString(cfg.PublicKey)
+	key, err := license.PublicKey()
 	if err != nil {
-		return nil, fmt.Errorf("ATLAS_LICENSE_PUBLIC_KEY: %w", err)
+		return nil, err
+	}
+	if cfg.File == "" {
+		cfg.File = filepath.Join(blobDir, "license", licenseFileName)
 	}
 	return license.NewHolder(cfg.File, key), nil
 }
 
 // newDeployment reads what the screen shows but an administrator cannot change.
-func newDeployment() (httpapi.Deployment, error) {
+func newDeployment(caps search.Capabilities) (httpapi.Deployment, error) {
 	embed, err := config.Load[config.Embedding]()
 	if err != nil {
 		return httpapi.Deployment{}, err
@@ -346,11 +390,12 @@ func newDeployment() (httpapi.Deployment, error) {
 	}
 	network, err := config.Load[config.Network]()
 	return httpapi.Deployment{ChatModel: answering.LLMModel, EmbedModel: embed.Model, RerankModel: answering.RerankModel,
-		NetworkIsolated: network.Isolated}, err
+		NetworkIsolated: network.Isolated, AnswerMode: string(caps.Mode), AnswerGaps: caps.Gaps}, err
 }
 
 // newPanel wires the overview from the modules that hold the numbers.
 func newPanel(d deps, parts apiParts) *overview.Service {
 	return &overview.Service{Questions: parts.search, Library: documents.NewLibrary(d.db, d.blobs), Quarantine: parts.admin,
-		Alerts: graph.NewService(d.db), Taxonomy: &catalog.Service{DB: d.db}, Now: time.Now}
+		Alerts: graph.NewService(d.db), Taxonomy: &catalog.Service{DB: d.db}, Now: time.Now,
+		AlertsEnabled: func() bool { return parts.licenses.Current().Has(license.FeatureAlerts) }}
 }

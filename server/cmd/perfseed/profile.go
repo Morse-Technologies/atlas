@@ -10,7 +10,7 @@ type profile struct {
 	Documents    int
 	ChunksPerDoc int
 	Sources      int // documents are spread over this many sources
-	Restricted   int // how many of those sources only the reader may read
+	Restricted   int // how many of those sources only the readers may read
 	HugeDocs     int // documents of HugeChunks passages each, on top of Documents
 	HugeChunks   int
 }

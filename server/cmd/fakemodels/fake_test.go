@@ -111,6 +111,13 @@ func TestWithoutPassagesTheModelSaysItCannotAnswerAndCitesNothing(t *testing.T) 
 	}
 }
 
+func TestARewriteRequestGetsTheWordsOfBothQuestions(t *testing.T) {
+	got := answerFrom("Previous question: tightening torque of the spindle?\nLast question: and the unit?")
+	if got != "tightening torque of the spindle? and the unit?" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestModelsAreListed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
