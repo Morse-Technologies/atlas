@@ -1,6 +1,6 @@
 # The web container (ATLAS.md §4.2): the Next.js app as a standalone server, behind Caddy on the same origin.
 # Build: docker build --build-arg NEXT_PUBLIC_ATLAS_EDITION=pro -t atlas-web app
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS build
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -13,7 +13,7 @@ ARG NEXT_PUBLIC_ATLAS_API=live
 ENV NEXT_PUBLIC_ATLAS_EDITION=${NEXT_PUBLIC_ATLAS_EDITION} NEXT_PUBLIC_ATLAS_API=${NEXT_PUBLIC_ATLAS_API} NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
-FROM gcr.io/distroless/nodejs22-debian12:nonroot
+FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build --chown=65532:65532 /app/.next/standalone ./

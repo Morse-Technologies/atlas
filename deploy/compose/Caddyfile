@@ -35,7 +35,11 @@
 		}
 	}
 
+	# The interface only. 'unsafe-inline' scripts: Next.js starts each page with inline scripts and sends no nonce.
+	# 'wasm-unsafe-eval' and blob: workers: the PDF viewer decodes with WebAssembly in a worker. Nothing is loaded
+	# from another origin, and nothing may frame the page.
 	handle {
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 		reverse_proxy web:3000
 	}
 }

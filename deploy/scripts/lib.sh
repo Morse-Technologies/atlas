@@ -1,5 +1,5 @@
 # Shared by backup.sh, restore.sh and upgrade.sh. Source it; do not run it.
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../compose" && pwd)"
 cd "$COMPOSE_DIR"
@@ -16,11 +16,8 @@ BLOBS_VOLUME="${ATLAS_BLOBS_VOLUME:-${PROJECT}_blobs}"
 OWNER=atlas_owner
 DB=atlas
 
-compose() { docker compose "${ENV_ARGS[@]}" "$@"; }
-
-# SHA-256 of files with the same output and `-c` on Linux (GNU sha256sum) and macOS (its own sha256sum is BSD and
-# cannot check a list, so shasum is used there).
-if sha256sum --version 2>/dev/null | grep -q GNU; then sha256() { sha256sum "$@"; }; else sha256() { shasum -a 256 "$@"; }; fi
+# ${arr[@]+...}: an empty array is an error under `set -u` in the bash 3.2 of macOS.
+compose() { docker compose ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$@"; }
 
 # psql as the database owner, inside the postgres container. Arguments are passed to psql.
 owner_psql() { compose exec -T postgres psql -U "$OWNER" -v ON_ERROR_STOP=1 "$@"; }
@@ -31,4 +28,3 @@ postgres_image() { compose config --images | grep -m1 pgvector; }
 # The newest applied migration, written into every backup so a restore knows which schema it brings back.
 schema_version() { owner_psql -d "$DB" -Atc "SELECT max(version_id) FROM goose_db_version"; }
 
-die() { echo "error: $*" >&2; exit 1; }

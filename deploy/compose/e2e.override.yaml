@@ -1,0 +1,6 @@
+# Only for deploy/scripts/e2e.sh: the sample questions of `atlas eval` are read from the repository.
+# Never use it on a real installation.
+services:
+  api:
+    volumes:
+      - ../../server/testdata:/testdata:ro

@@ -3,6 +3,8 @@
 #   perf.sh [small|pilot|skew|multi-acl] [seconds per scenario]
 # It deletes the "atlasdev" stack's data, fills it with a synthetic corpus (server/cmd/perfseed) and runs the
 # scenarios of server/cmd/perfrun. The report goes to deploy/perf-results/ and to the screen.
+# setup creates 50 people and signs each in; sign-in is limited to 10 a minute per address, so it takes about six
+# minutes. Each simulated person asks at most once every 3.5 s, the pace the per-person question limit allows.
 set -euo pipefail
 
 profile="${1:-small}"
@@ -23,13 +25,13 @@ for _ in $(seq 1 60); do curl -fsk https://localhost/api/v1/setup >/dev/null 2>&
 
 cd "$root/server"
 state="$out/state.json"; questions="$out/questions.json"
-go run ./cmd/perfrun setup -url https://localhost -state "$state"
+go run ./cmd/perfrun setup -url https://localhost -state "$state" -people 50
 tenant="$(psql_owner 'select id from access.tenants limit 1')"
-reader="$(sed -n 's/.*"user_id":"\([^"]*\)".*/\1/p' "$state")"
+readers="$(go run ./cmd/perfrun readers -state "$state")"
 password="$(sed -n 's/^ATLAS_OWNER_PASSWORD=//p' "$root/deploy/compose/.env.dev")"
 
 echo "== corpus"
-go run ./cmd/perfseed -db "postgres://atlas_owner:$password@127.0.0.1:54329/atlas" -tenant "$tenant" -reader "$reader" -profile "$profile" -questions "$questions"
+go run ./cmd/perfseed -db "postgres://atlas_owner:$password@127.0.0.1:54329/atlas" -tenant "$tenant" -readers "$readers" -profile "$profile" -questions "$questions"
 echo "== query plans"; "$root/deploy/scripts/perf-explain.sh" || echo "(the plans could not be read)"
 
 run() { go run ./cmd/perfrun run -url https://localhost -state "$state" -questions "$questions" -duration "${seconds}s" "$@"; }

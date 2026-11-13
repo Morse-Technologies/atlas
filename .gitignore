@@ -29,6 +29,7 @@ app/src/ui/organisms/Widgets.tsx
 # Knowledge map
 app/src/app/(app)/map/
 app/src/features/quality/MapScreen.tsx
+app/src/features/quality/NodeLinks.tsx
 app/src/ui/organisms/KnowledgeGraph.tsx
 app/src/ui/organisms/KnowledgeMap.tsx
 # Quality alerts
@@ -39,6 +40,8 @@ app/src/ui/organisms/Alerts.tsx
 # Users is Core: local accounts must be manageable and deletable (GDPR) without Pro.
 app/src/app/(app)/audit/
 app/src/features/admin/AuditScreen.tsx
+app/src/features/admin/SignedReport.tsx
+app/src/lib/download.ts
 
 # Local deploy secrets and mounted sources
 deploy/compose/.env
@@ -54,3 +57,7 @@ deploy/compose/license/*
 
 # Performance reports and their session files.
 deploy/perf-results/
+
+# Backups of an installation and the keys that encrypt them.
+deploy/backups/
+deploy/compose/backup-keys/

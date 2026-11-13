@@ -13,6 +13,9 @@ x-atlas: &atlas
   image: atlas:dev
   build:
     context: ../../server
+    target: prod
+    args:
+      GO_TAGS: ${ATLAS_GO_TAGS:-} # only development stacks pass devlicense (deploy/scripts/dev-env.sh)
   restart: unless-stopped
   environment: &atlas-env
     ATLAS_DATABASE_URL: postgres://atlas_app:${ATLAS_APP_PASSWORD:?set it in .env}@postgres:5432/atlas?sslmode=disable
@@ -23,6 +26,7 @@ x-atlas: &atlas
     # Optional models. Empty means that part is off and search degrades (ATLAS.md §11.3).
     ATLAS_EMBED_URL: ${ATLAS_EMBED_URL:-}
     ATLAS_EMBED_API: ${ATLAS_EMBED_API:-tei} # tei, or ollama for trials
+    ATLAS_EMBED_TIMEOUT: ${ATLAS_EMBED_TIMEOUT:-} # empty: 5s
     ATLAS_RERANK_URL: ${ATLAS_RERANK_URL:-}
     ATLAS_RERANK_TIMEOUT: ${ATLAS_RERANK_TIMEOUT:-5s}
     ATLAS_DB_MAX_CONNS: ${ATLAS_DB_MAX_CONNS:-24}
@@ -45,7 +49,7 @@ x-isolated: &isolated
 
 services:
   postgres:
-    image: pgvector/pgvector:0.8.7-pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    image: &postgres-image pgvector/pgvector:0.8.7-pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
     restart: unless-stopped
     # Building or rebuilding a large vector index uses shared memory in parallel; Docker's default 64 MB is too
     # small and the build fails with "No space left on device".
@@ -75,8 +79,9 @@ services:
       - pgdata:/var/lib/postgresql
       - ./initdb:/docker-entrypoint-initdb.d:ro
     networks: [core]
+    # The init-time server (initdb.d scripts) listens only on the socket, so a socket check passes before TCP works.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas_owner -d atlas"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U atlas_owner -d atlas"]
       interval: 5s
       retries: 20
 
@@ -84,6 +89,9 @@ services:
     image: atlas:dev
     build:
       context: ../../server
+      target: prod
+      args:
+        GO_TAGS: ${ATLAS_GO_TAGS:-}
     command: ["migrate"]
     environment:
       ATLAS_MIGRATE_DATABASE_URL: postgres://atlas_owner:${ATLAS_OWNER_PASSWORD}@postgres:5432/atlas?sslmode=disable
@@ -92,6 +100,39 @@ services:
       postgres:
         condition: service_healthy
 
+  # Daily backups (docs/OPERACION.md). Off by default: start it with `docker compose --profile backup up -d`.
+  # It has no Docker: it reads Postgres over the network and the blob volume read-only, and runs the same
+  # backup.sh as an administrator would (--in-container). The health check turns unhealthy when the last good
+  # backup is more than 26 hours old.
+  backup:
+    profiles: [backup]
+    image: *postgres-image
+    entrypoint: ["bash", "/scripts/backup-loop.sh"]
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: atlas_owner
+      PGDATABASE: atlas
+      PGPASSWORD: ${ATLAS_OWNER_PASSWORD:?set it in .env}
+      ATLAS_BACKUP_AT: ${ATLAS_BACKUP_AT:-02:30}
+      ATLAS_BACKUP_KEEP: ${ATLAS_BACKUP_KEEP:-7}
+      ATLAS_BACKUP_GPG_RECIPIENT: ${ATLAS_BACKUP_GPG_RECIPIENT:-}
+    volumes:
+      - blobs:/data:ro
+      - ${ATLAS_BACKUP_DIR:-../backups}:/backups
+      - ${ATLAS_BACKUP_KEYS_DIR:-./backup-keys}:/keys:ro # public keys to encrypt for (ATLAS_BACKUP_GPG_RECIPIENT)
+      - ../scripts:/scripts:ro
+    networks: [core]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "/scripts/backup-loop.sh", "--check"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+      start_period: 30s
+
   api:
     <<: *atlas
     command: ["api"]
@@ -99,8 +140,7 @@ services:
       <<: *atlas-env
       ATLAS_SECRET_KEY: ${ATLAS_SECRET_KEY:?set it in .env (openssl rand -base64 32)}
       ATLAS_SOURCE_ROOTS: /sources # the only folders an administrator may register
-      ATLAS_LICENSE_FILE: ${ATLAS_LICENSE_FILE:-}
-      ATLAS_LICENSE_PUBLIC_KEY: ${ATLAS_LICENSE_PUBLIC_KEY:-}
+      ATLAS_LICENSE_PUBLIC_KEY: ${ATLAS_LICENSE_PUBLIC_KEY:-} # only read by a development build (devlicense)
       ATLAS_NETWORK_ISOLATED: ${ATLAS_NETWORK_ISOLATED:-true}
     ports: ["127.0.0.1:8080:8080"] # for local diagnostics only; people reach the API through Caddy
     healthcheck:
@@ -112,11 +152,16 @@ services:
     volumes:
       - blobs:/data
       - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
-      - ${ATLAS_LICENSE_DIR:-./license}:/license:ro
 
   worker:
     <<: *atlas
     command: ["worker"]
+    healthcheck:
+      test: ["CMD", "/atlas", "healthcheck", "--role", "worker"] # database + the job client's heartbeat file
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - blobs:/data
       - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
@@ -124,6 +169,12 @@ services:
   watch:
     <<: *atlas
     command: ["watch"]
+    healthcheck:
+      test: ["CMD", "/atlas", "healthcheck", "--role", "watch"] # database
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ${ATLAS_SOURCES_DIR:-./sources}:/sources:ro
 
@@ -133,6 +184,12 @@ services:
     environment:
       DOCLING_SERVE_MAX_NUM_PAGES: "2000" # same limit as maxPages in internal/documents
     mem_limit: ${ATLAS_DOCLING_MEM:-8g}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5001/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     cpus: 4
     pids_limit: 512
 
@@ -140,6 +197,12 @@ services:
     <<: *isolated
     image: gotenberg/gotenberg:8.39.0@sha256:13672f317b443c793e972b1bd2155ec62a3e7b6891b411e8196442cc053ee5f5
     command: ["gotenberg", "--chromium-disable-javascript=true"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     mem_limit: 2g
     cpus: 2
     pids_limit: 512
@@ -153,13 +216,19 @@ services:
         NEXT_PUBLIC_ATLAS_API: live
     restart: unless-stopped
     networks: [edge]
+    healthcheck:
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
   caddy:
-    image: caddy:2.10-alpine
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     restart: unless-stopped
     ports: ["80:80", "443:443"]
     environment:
@@ -169,6 +238,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks: [core, edge]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"] # the admin API answers when Caddy is up
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     depends_on:
       api:
         condition: service_healthy
@@ -180,7 +255,10 @@ services:
   # ATLAS_RERANK_URL=http://fake-models:8080 and ATLAS_LLM_URL=http://fake-models:8080/v1.
   fake-models:
     profiles: [fake]
-    image: atlas:dev
+    image: atlas-fake:dev
+    build:
+      context: ../../server
+      target: fake
     entrypoint: ["/fakemodels"]
     restart: unless-stopped
     healthcheck:
@@ -198,8 +276,14 @@ services:
   # (cpu-1.8 by default; see the TEI documentation for the CUDA tags).
   tei-embed:
     profiles: [models]
-    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c}
     command: ["--model-id", "/models/bge-m3", "--port", "80"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     restart: unless-stopped
     environment:
       HF_HUB_OFFLINE: "1"
@@ -208,8 +292,14 @@ services:
 
   tei-rerank:
     profiles: [models]
-    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c}
     command: ["--model-id", "/models/bge-reranker-v2-m3", "--port", "80"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     restart: unless-stopped
     environment:
       HF_HUB_OFFLINE: "1"
@@ -220,13 +310,19 @@ services:
   # Set ATLAS_LLM_URL=http://llm:8000/v1 and ATLAS_LLM_MODEL to the served name.
   llm:
     profiles: [gpu]
-    image: ${ATLAS_VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: ${ATLAS_VLLM_IMAGE:-vllm/vllm-openai:v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e}
     command: ["--model", "/models/llm", "--served-model-name", "${ATLAS_LLM_MODEL:-atlas-llm}", "--scheduling-policy", "priority", "--gpu-memory-utilization", "0.65"]
     restart: unless-stopped
     environment:
       HF_HUB_OFFLINE: "1"
     volumes: ["${ATLAS_MODELS_DIR:-./models}:/models:ro"]
     networks: [models]
+    healthcheck: # vLLM has python, not curl; loading a model takes minutes
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
     deploy:
       resources:
         reservations:
@@ -237,7 +333,7 @@ services:
   # The models network has no internet, so ollama-pull downloads the models once into the shared volume.
   ollama-pull:
     profiles: [cpu]
-    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:latest}
+    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - ollama serve >/dev/null 2>&1 & until ollama list >/dev/null 2>&1; do sleep 1; done;
@@ -252,16 +348,22 @@ services:
   rerank-cpu:
     profiles: [cpu]
     platform: linux/amd64 # TEI publishes no arm64 CPU image: on Apple silicon it runs emulated, slowly
-    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    image: ${ATLAS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c}
     command: ["--model-id", "${ATLAS_RERANK_TRIAL_MODEL:-BAAI/bge-reranker-base}", "--port", "80", "--tokenization-workers", "1"]
     restart: unless-stopped
     mem_limit: ${ATLAS_RERANK_MEM:-4g}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s # downloads its weights on first start
     volumes: ["tei-cache:/data"]
     networks: [core, models]
 
   llm-cpu:
     profiles: [cpu]
-    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:latest}
+    image: ${ATLAS_OLLAMA_IMAGE:-ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592}
     restart: unless-stopped
     mem_limit: ${ATLAS_OLLAMA_MEM:-4g}
     volumes: ["ollama:/root/.ollama"]

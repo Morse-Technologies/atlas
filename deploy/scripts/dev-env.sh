@@ -4,7 +4,8 @@
 #   dev-env.sh [fake|ollama] [--pro]
 #     fake    (default) the deterministic fake model servers -> .env.dev
 #     ollama  real small models with Ollama (qwen2.5:1.5b + bge-m3, about 3 GB of RAM) -> .env.ollama
-#     --pro   also signs a one-year Pro development license (alerts, map, audit reports) with a throwaway key
+#     --pro   also signs a one-year Pro development license (alerts, map, audit reports) with a throwaway key.
+#             The license is not mounted: install it from Settings, or let e2e.sh do it (ATLAS_E2E_LICENSE_FILE).
 #     --path  only print the env file name for these options (.env.dev, .env.dev-pro, .env.ollama, .env.ollama-pro)
 #   then: export ATLAS_ENV_FILE=.env.dev   (every script and `docker compose --env-file` use it)
 # Never use these files in production: there the passwords, the secret key and the license are yours.
@@ -47,6 +48,7 @@ COMPOSE_PROFILES=cpu
 ATLAS_EMBED_API=ollama
 ATLAS_EMBED_URL=http://llm-cpu:11434
 ATLAS_EMBED_MODEL=bge-m3
+ATLAS_EMBED_TIMEOUT=60s
 ATLAS_RERANK_URL=http://rerank-cpu:80
 ATLAS_RERANK_TIMEOUT=90s
 ATLAS_LLM_URL=http://llm-cpu:11434/v1
@@ -61,7 +63,6 @@ license_env() {
     && go run ./cmd/licensegen sign --key "$dir/.keys/private.key" --org "Planta Norte" --days 365 \
          --features alerts,map,audit_reports --out "$dir/dev.lic")
   echo "ATLAS_EDITION=pro"
-  echo "ATLAS_LICENSE_FILE=/license/dev.lic"
   echo "ATLAS_LICENSE_PUBLIC_KEY=$(cat "$dir/.keys/public.key")"
 }
 
@@ -73,6 +74,8 @@ ATLAS_APP_PASSWORD=$(random)
 ATLAS_SECRET_KEY=$(openssl rand -base64 32)
 ATLAS_HOST=localhost
 ATLAS_SOURCES_DIR=./sources
+# A development image accepts the throwaway license key above; a production image never does.
+ATLAS_GO_TAGS=devlicense
 # Docker Desktop gives containers about 8 GB in total; docling alone may not take all of it.
 ATLAS_DOCLING_MEM=${ATLAS_DOCLING_MEM:-4g}
 ENV

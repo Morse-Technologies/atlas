@@ -1,7 +1,7 @@
 TOOL    := go tool -modfile=$(CURDIR)/tools/go.mod
 COMPOSE := docker compose -f ../deploy/compose/compose.yaml
 
-.PHONY: gen lint test test-integration test-golden e2e up down
+.PHONY: gen lint vuln test test-integration test-golden e2e up down
 
 ## gen: regenerate sqlc queries and the OpenAPI server
 gen:
@@ -12,9 +12,14 @@ gen:
 lint:
 	$(TOOL) golangci-lint run ./...
 
-## test: unit and architecture tests, no Docker needed
+## vuln: known vulnerabilities in the code Atlas calls and in its dependencies (needs the network for the database)
+vuln:
+	$(TOOL) govulncheck ./...
+
+## test: unit and architecture tests, no Docker needed (the license package also runs with the devlicense tag)
 test:
 	go test -race ./...
+	go test -race -tags devlicense ./internal/platform/license
 
 ## test-integration: real Postgres via testcontainers (Docker required)
 test-integration:
