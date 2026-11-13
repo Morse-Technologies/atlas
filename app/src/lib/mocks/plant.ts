@@ -20,13 +20,13 @@ const dayAt = (daysAgo: number, h: number, m = 0) => {
 
 /* People ------------------------------------------------------------------ */
 export const people: Person[] = [
-  { id: "u-admin", name: "Admin", email: "admin@admin.es", department: "IT", roles: ["admin", "curator"], isActive: true, lastActiveAt: ago(0), hue: 190 },
-  { id: "u-lucia", name: "Lucía Marín", email: "lucia.marin@plantanorte.example", department: "Quality", roles: ["curator", "editor_metadata", "organizer_approver"], isActive: true, lastActiveAt: ago(2 * 60_000), hue: 168 },
-  { id: "u-javier", name: "Javier García", email: "javier.garcia@plantanorte.example", department: "Quality", roles: ["editor_metadata", "viewer"], isActive: true, lastActiveAt: ago(3 * 3_600_000), hue: 32 },
-  { id: "u-ana", name: "Ana Torres", email: "ana.torres@plantanorte.example", department: "IT", roles: ["admin"], isActive: true, lastActiveAt: ago(26 * 60_000), hue: 222 },
-  { id: "u-pablo", name: "Pablo Ruiz", email: "pablo.ruiz@plantanorte.example", department: "Maintenance", roles: ["viewer"], isActive: true, lastActiveAt: ago(9 * 60_000), hue: 98 },
-  { id: "u-marta", name: "Marta Vidal", email: "marta.vidal@plantanorte.example", department: "Compliance", roles: ["auditor"], isActive: true, lastActiveAt: ago(6 * DAY), hue: 300 },
-  { id: "u-diego", name: "Diego Ortega", email: "diego.ortega@plantanorte.example", department: "Production", roles: ["viewer"], isActive: false, lastActiveAt: ago(41 * DAY), hue: 8 },
+  { id: "u-admin", name: "Admin", email: "admin@admin.es", department: "IT", roles: ["admin", "curator"], isActive: true, lastActiveAt: ago(0), hue: 190, mustChangePassword: false },
+  { id: "u-lucia", name: "Lucía Marín", email: "lucia.marin@plantanorte.example", department: "Quality", roles: ["curator", "editor_metadata", "organizer_approver"], isActive: true, lastActiveAt: ago(2 * 60_000), hue: 168, mustChangePassword: false },
+  { id: "u-javier", name: "Javier García", email: "javier.garcia@plantanorte.example", department: "Quality", roles: ["editor_metadata", "viewer"], isActive: true, lastActiveAt: ago(3 * 3_600_000), hue: 32, mustChangePassword: false },
+  { id: "u-ana", name: "Ana Torres", email: "ana.torres@plantanorte.example", department: "IT", roles: ["admin"], isActive: true, lastActiveAt: ago(26 * 60_000), hue: 222, mustChangePassword: false },
+  { id: "u-pablo", name: "Pablo Ruiz", email: "pablo.ruiz@plantanorte.example", department: "Maintenance", roles: ["viewer"], isActive: true, lastActiveAt: ago(9 * 60_000), hue: 98, mustChangePassword: false },
+  { id: "u-marta", name: "Marta Vidal", email: "marta.vidal@plantanorte.example", department: "Compliance", roles: ["auditor"], isActive: true, lastActiveAt: ago(6 * DAY), hue: 300, mustChangePassword: false },
+  { id: "u-diego", name: "Diego Ortega", email: "diego.ortega@plantanorte.example", department: "Production", roles: ["viewer"], isActive: false, lastActiveAt: ago(41 * DAY), hue: 8, mustChangePassword: false },
 ];
 export const ME_ID = "u-admin";
 
@@ -41,6 +41,9 @@ export const sources: Source[] = [
 ];
 
 /* Documents --------------------------------------------------------------- */
+/** The demo taxonomy: every document type the fictional plant uses, with its band. */
+export const docTypeCatalog = () => [...new Set(seeds.map((s) => s.docType))].map((key) => ({ key, label: key.replace(/_/g, " "), band: bandOf(key) }));
+
 const bandOf = (t: DocType): BandKind =>
   t === "norm" ? "norm" : t === "erp_record" ? "erp"
   : t === "procedure" || t === "work_instruction" || t === "form" ? "procedure" : "manual";
@@ -115,12 +118,13 @@ export const documents: Document[] = seeds.map((s, i) => {
     state: j === s.revisions.length - 1 ? "indexed" : "superseded",
     indexedAt: ago((s.revisions.length - j) * 40 * DAY + i * 3_600_000),
     pages: s.pages,
+    preview: !!s.sample,
   }));
   return {
     id: s.id, code: s.code, title: s.title, docType: s.docType, band: bandOf(s.docType),
     status: s.status ?? "current", department: s.department,
     entities: entitiesOf(s), attributes: attributesOf(s), ownerId: s.ownerId ?? null,
-    approvedAt: s.approvedAt ?? null, reviewDueAt: s.reviewDueAt ?? null, sourceId: s.sourceId,
+    approvedAt: s.approvedAt ?? null, reviewDueAt: s.reviewDueAt ?? null, sourceId: s.sourceId, sourceKind: "folder",
     path: s.path, language: s.language ?? "es", currentVersionId: versions[versions.length - 1].id,
     versions, provenance: provenanceFor(s), summary: s.summary, sample: s.sample,
   };
@@ -256,6 +260,13 @@ export const questionLog: QuestionLogEntry[] = (() => {
   return out;
 })();
 
+/** Example questions of the empty assistant: they refer to the fictional plant. */
+export const suggestions = [
+  "What's the tightening torque for the spindle on CNC-07?",
+  "What do I need to lock out before opening the CNC-08 guard?",
+  "What coolant concentration should CNC-07 run at?",
+];
+
 /* Settings and license -------------------------------------------------------------- */
 export const settings: Settings = {
   orgName: "Planta Norte",
@@ -267,7 +278,10 @@ export const settings: Settings = {
   warnContradictions: true,
   notFoundThreshold: 0.35,
   answerLanguage: "user",
+  searchLanguage: "none",
   retentionDays: 730,
+  answerMode: "generated",
+  answerGaps: [],
 };
 
 export const license: License = {
@@ -278,28 +292,27 @@ export const license: License = {
 };
 
 /* Graph ------------------------------------------------------------------------------- */
-/** Graph layers from docs/ATLAS_DESIGN.md §9.1. */
-const LAYER = { explicit: 1, entities: 2, similarity: 3, llmJudge: 4 } as const;
+/** The only layers the server writes: references and mentions (1) and documents with the same code (2). */
+const LAYER = { references: 1, sameCode: 2 } as const;
 
 const entityNode = (e: EntityRef, ref: string | null): GraphNode =>
   ({ id: entityNodeId(e), kind: "entity", entityType: e.type, label: e.label, ref, band: e.type === STANDARD ? "norm" : undefined });
 
 const entityEdge = (d: Document, e: EntityRef): GraphEdge => {
   const cites = e.type === STANDARD;
-  return { id: `e:${d.id}:${e.label}`, source: `d:${d.id}`, target: entityNodeId(e), kind: cites ? "cites_norm" : "mentions", layer: cites ? LAYER.explicit : LAYER.entities, status: "confirmed" };
+  return { id: `e:${d.id}:${e.label}`, source: `d:${d.id}`, target: entityNodeId(e), kind: cites ? "cites_norm" : "mentions", layer: LAYER.references, status: "confirmed" };
 };
 
 const edgesOfDocument = (d: Document): GraphEdge[] => [
-  { id: `e:${d.id}:dep`, source: `d:${d.id}`, target: `dep:${d.department}`, kind: "belongs_to", layer: LAYER.explicit, status: "confirmed" },
+  { id: `e:${d.id}:dep`, source: `d:${d.id}`, target: `dep:${d.department}`, kind: "belongs_to", layer: LAYER.references, status: "confirmed" },
   ...d.entities.map((e) => entityEdge(d, e)),
 ];
 
 const curatedEdges: GraphEdge[] = [
-  { id: "e:ref:014-005", source: "d:d-pnt014", target: "d:d-pnt005", kind: "references", layer: LAYER.explicit, status: "confirmed" },
-  { id: "e:ref:014-009", source: "d:d-pnt014", target: "d:d-pnt009", kind: "references", layer: LAYER.explicit, status: "confirmed" },
-  { id: "e:ref:031-man", source: "d:d-pnt031", target: "d:d-man-cnc07", kind: "references", layer: LAYER.explicit, status: "confirmed" },
-  { id: "e:contra", source: "d:d-pnt031", target: "d:d-man-cnc07", kind: "contradicts", layer: LAYER.llmJudge, status: "suggested" },
-  { id: "e:dup", source: "d:d-loto-copy", target: "d:d-pnt021", kind: "duplicates", layer: LAYER.similarity, status: "suggested" },
+  { id: "e:ref:014-005", source: "d:d-pnt014", target: "d:d-pnt005", kind: "references", layer: LAYER.references, status: "confirmed" },
+  { id: "e:ref:014-009", source: "d:d-pnt014", target: "d:d-pnt009", kind: "references", layer: LAYER.references, status: "confirmed" },
+  { id: "e:ref:031-man", source: "d:d-pnt031", target: "d:d-man-cnc07", kind: "references", layer: LAYER.references, status: "confirmed" },
+  { id: "e:dup", source: "d:d-loto-copy", target: "d:d-pnt021", kind: "duplicates", layer: LAYER.sameCode, status: "confirmed" },
 ];
 
 const nodeOfDocument = (d: Document): GraphNode =>
@@ -331,23 +344,19 @@ export function hash64(input: string) {
   return out;
 }
 const rawAudit: Omit<AuditEvent, "id" | "hash" | "prevHash">[] = [
-  { at: ago(9 * DAY), actorId: null, action: "alert.raised", subject: "Alert al-1", detail: "CONTRADICTION between PNT-031 rev.4 and MAN-CNC07 rev.B" },
   { at: ago(6 * DAY), actorId: "u-marta", action: "audit.exported", subject: "Audit log", detail: "Exported 1–412 as CSV for the ISO 9001 surveillance audit" },
-  { at: ago(5 * DAY), actorId: null, action: "alert.raised", subject: "Alert al-6", detail: "OLD_VERSION_CIRCULATING for PNT-014 rev.2" },
   { at: ago(3 * DAY + 2 * 3_600_000), actorId: "u-diego", action: "answer.generated", subject: "Answer a-crane", detail: "Not found, “What's the maximum load for the overhead crane in Line 3?”" },
   { at: ago(2 * DAY + 5 * 3_600_000), actorId: "u-pablo", action: "answer.generated", subject: "Answer a-coolant", detail: "Answered with 3 citations, PNT-031 rev.4, MAN-CNC07 rev.B, F-007 rev.4" },
   { at: ago(2 * DAY + 5 * 3_600_000 - 40_000), actorId: "u-pablo", action: "answer.feedback", subject: "Answer a-coolant", detail: "Not right, “the manual says 8 %”" },
   { at: ago(DAY + 6 * 3_600_000), actorId: "u-lucia", action: "metadata.corrected", subject: "PNT-014", detail: "Owner set to Javier García (was empty)" },
   { at: ago(DAY + 3 * 3_600_000), actorId: "u-pablo", action: "answer.generated", subject: "Answer a-loto", detail: "Answered with 2 citations, PNT-021 rev.6, UNE-EN ISO 13849-1:2016" },
   { at: ago(DAY + 3 * 3_600_000 - 25_000), actorId: "u-pablo", action: "answer.feedback", subject: "Answer a-loto", detail: "Helpful" },
-  { at: ago(DAY + 2 * 3_600_000), actorId: "u-ana", action: "source.updated", subject: "Production SharePoint", detail: "Added site /sites/produccion/Informes" },
-  { at: ago(14 * 3_600_000), actorId: "u-javier", action: "alert.dismissed", subject: "Alert al-9", detail: "PNT-005 is being rewritten for rev.8 (due December)" },
-  { at: ago(3 * 3_600_000), actorId: null, action: "source.sync_failed", subject: "Production SharePoint", detail: "429 from Microsoft Graph; 5 items retried later" },
-  { at: ago(52 * 60_000), actorId: null, action: "source.synced", subject: "Norms library", detail: "0 changes" },
-  { at: ago(38 * 60_000), actorId: null, action: "source.synced", subject: "ERP machine master", detail: "2 records updated" },
+  { at: ago(DAY + 2 * 3_600_000), actorId: "u-ana", action: "source.paused", subject: "Production SharePoint", detail: "Added site /sites/produccion/Informes" },
+  { at: ago(14 * 3_600_000), actorId: "u-javier", action: "alert.updated", subject: "Alert al-9", detail: "status=dismissed" },
+  { at: ago(52 * 60_000), actorId: null, action: "source.sync_requested", subject: "Norms library", detail: "0 changes" },
+  { at: ago(38 * 60_000), actorId: null, action: "source.sync_requested", subject: "ERP machine master", detail: "2 records updated" },
   { at: ago(26 * 60_000), actorId: "u-ana", action: "user.login", subject: "Ana Torres", detail: "Signed in with company account" },
-  { at: ago(11 * 60_000), actorId: null, action: "document.quarantined", subject: "Hidraulica_2019.pdf", detail: "Encrypted PDF" },
-  { at: ago(4 * 60_000), actorId: null, action: "source.synced", subject: "Quality share", detail: "2 documents indexed, 1 unchanged" },
+  { at: ago(4 * 60_000), actorId: null, action: "source.sync_requested", subject: "Quality share", detail: "2 documents indexed, 1 unchanged" },
   { at: ago(2 * 60_000), actorId: "u-lucia", action: "user.login", subject: "Lucía Marín", detail: "Signed in with company account" },
   { at: ago(0), actorId: "u-lucia", action: "answer.generated", subject: "Answer a-torque", detail: "Answered with 2 citations, PNT-014 rev.3, MAN-CNC07 rev.B" },
 ];

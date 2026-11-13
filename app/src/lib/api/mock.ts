@@ -1,17 +1,25 @@
 // In-memory implementation of AtlasApi over the fictional plant. Swap for the OpenAPI client later;
 // components only ever see AtlasApi through features/* hooks.
 import * as plant from "@/lib/mocks/plant";
-import { clockNow } from "@/lib/clock";
+import { demoNow as clockNow } from "@/lib/demo/clock";
 import { SESSION_COOKIE, SESSION_MAX_AGE_S } from "@/lib/auth";
 import { alertChanges } from "./types";
 import type {
-  Alert, Answer, AskEvent, AtlasApi, BandKind, Citation, Document, DocumentFilter, Overview, Person, SettingsPatch, Source,
+  Alert, Answer, AskEvent, AtlasApi, BandKind, Citation, Document, DocumentFilter, Overview, Page, Person, SettingsPatch, Source,
 } from "./types";
 
 const clone = <T,>(v: T): T => structuredClone(v);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // shortcut: a small fixed delay keeps loading states honest without making the demo feel slow.
 const latency = () => wait(40);
+
+const MOCK_PAGE_SIZE = 50;
+/** In-memory paging: the cursor is the index of the first row of the next page. */
+const pageOf = <T,>(rows: T[], cursor?: string): Page<T> => {
+  const from = Number(cursor ?? 0);
+  const to = from + MOCK_PAGE_SIZE;
+  return { items: clone(rows.slice(from, to)), nextCursor: to < rows.length ? String(to) : null };
+};
 
 /** Idempotency: a request replayed with the same key returns the first result instead of applying twice. */
 const seen = new Map<string, Promise<unknown>>();
@@ -31,6 +39,7 @@ const db = {
   sources: clone(plant.sources),
   quarantine: clone(plant.quarantine),
   license: clone(plant.license),
+  edgeDecisions: new Map<string, "confirmed" | "rejected">(),
 };
 
 /** Same rule the server enforces: the organization always keeps an admin. */
@@ -61,7 +70,6 @@ function overview(): Overview {
   const last7 = log.filter((q) => plant.NOW.getTime() - new Date(q.at).getTime() < 7 * 86_400_000);
   const counts = new Map<string, number>();
   last7.forEach((q) => counts.set(q.topic, (counts.get(q.topic) ?? 0) + 1));
-  const topTopics = [...counts].map(([topic, count]) => ({ topic, count })).sort((a, b) => b.count - a.count).slice(0, 5);
   // Same definition as the Documents screen: every indexed document, whatever its status.
   const byBand = { procedure: 0, manual: 0, norm: 0, erp: 0 } as Record<BandKind, number>;
   plant.documents.forEach((d) => byBand[d.band]++);
@@ -71,8 +79,7 @@ function overview(): Overview {
   return {
     today: { questions: todays.length, answered, notFound: todays.length - answered, medianLatencyMs: 4100 },
     week: days,
-    topTopics,
-    documents: { indexed: plant.documents.length, byBand, processing: 0, quarantined: db.quarantine.length },
+    documents: { indexed: plant.documents.length, byBand, processing: 0, retrying: 0, quarantined: db.quarantine.length },
     openAlerts: { high: sev("high"), medium: sev("medium"), low: sev("low") },
     finding: top
       ? `${top.title}. Technicians asked about it ${counts.get("Coolant concentration") ?? 0} times this week.`
@@ -99,7 +106,7 @@ function matchAnswer(question: string): Answer | null {
   return null;
 }
 
-async function* ask(question: string, opts: { conversationId?: string; scope?: string | null }): AsyncIterable<AskEvent> {
+async function* ask(question: string, opts: Parameters<AtlasApi["ask"]>[1]): AsyncIterable<AskEvent> {
   await wait(150);
   const base = matchAnswer(question);
   const answerId = `a-${Date.now().toString(36)}`;
@@ -110,6 +117,7 @@ async function* ask(question: string, opts: { conversationId?: string; scope?: s
   const text = base?.text ??
     "I couldn't find this in your documents. Nothing indexed mentions it closely enough for me to answer with a source.";
   for (const piece of text.match(/\S+\s*/g) ?? []) {
+    if (opts.signal?.aborted) return;
     await wait(18 + Math.random() * 30);
     yield { type: "token", t: piece };
   }
@@ -117,7 +125,7 @@ async function* ask(question: string, opts: { conversationId?: string; scope?: s
     id: answerId, conversationId, question, askedById: plant.ME_ID, askedAt: clockNow().toISOString(),
     outcome: base ? "answered" : "not_found", text, citations, notes,
     nearby: base ? [] : filterDocs({ q: question.split(/\s+/).find((w) => w.length > 4) }).slice(0, 3).map((d) => d.id),
-    latencyMs: 1900 + text.length * 6, model: db.settings.chatModel.split(" ")[0], scope: opts.scope ?? null, feedback: null,
+    latencyMs: 1900 + text.length * 6, model: db.settings.chatModel.split(" ")[0], scope: null, feedback: null,
   };
   if (!answer.nearby.length && !base) answer.nearby = ["d-pnt014", "d-pnt021", "d-man-cnc07"];
   db.answers.push(answer);
@@ -180,18 +188,29 @@ export const mockApi: AtlasApi = {
   },
   feedback: (answerId, value, key) => once(key, async () => { await wait(120); const a = db.answers.find((x) => x.id === answerId); if (a) a.feedback = value; }),
   async documents(filter) { await latency(); return clone(filterDocs(filter)); },
+  async documentsPage(filter, cursor) { await latency(); return pageOf(filterDocs(filter), cursor); },
   async document(id) {
     await latency();
     const d = plant.docById(id);
     if (!d) throw new Error("Document not found");
     return clone(d);
   },
+  async catalog() { await latency(); return { docTypes: plant.docTypeCatalog(), entityTypes: [{ key: "machine", label: "Machine" }, { key: "standard", label: "Standard" }] }; },
+  correctMetadata: (id, patch, key) => once(key, async () => {
+    await wait(250);
+    const d = plant.docById(id);
+    if (!d) throw new Error("Document not found");
+    Object.assign(d, patch, patch.docType ? { band: plant.docTypeCatalog().find((t) => t.key === patch.docType)?.band ?? d.band } : {});
+    d.provenance = [...d.provenance.filter((p) => !(p.field.toLowerCase() in patch)), ...Object.entries(patch).map(([field, value]) => ({ field, value: String(value ?? ""), source: "manual" as const, confidence: 1 }))];
+    return clone(d);
+  }),
+  deleteDocument: (id, key) => once(key, async () => { await wait(250); throw new Error(`Only uploaded documents can be deleted (${id}).`); }),
   async related(id) {
     await latency();
     const g = plant.buildGraph();
     const key = `d:${id}`;
     return g.edges
-      .filter((e) => (e.source === key || e.target === key) && (e.kind === "references" || e.kind === "contradicts" || e.kind === "duplicates"))
+      .filter((e) => (e.source === key || e.target === key) && (e.kind === "references" || e.kind === "duplicates"))
       .map((e) => ({ document: clone(plant.docById((e.source === key ? e.target : e.source).slice(2))!), via: e.kind }))
       .concat(
         plant.documents.filter((d) => d.id !== id && d.code === plant.docById(id)?.code && d.code)
@@ -206,6 +225,12 @@ export const mockApi: AtlasApi = {
     await wait(900);
     const s = db.sources.find((x) => x.id === id);
     if (s) { s.lastSyncAt = clockNow().toISOString(); if (s.status === "error") { s.status = "active"; s.lastError = null; } }
+  }),
+  removeSource: (id, key) => once(key, async () => {
+    await wait(250);
+    const s = db.sources.find((x) => x.id === id);
+    if (s?.kind === "upload") throw new Error("The uploads source cannot be removed; delete its files instead.");
+    db.sources = db.sources.filter((x) => x.id !== id);
   }),
   setSourcePaused: (id, paused, key) => once(key, async () => {
     await wait(250);
@@ -230,8 +255,20 @@ export const mockApi: AtlasApi = {
     Object.assign(a, alertChanges(patch));
     return clone(a);
   }),
-  async graph() { await latency(); return plant.buildGraph(); },
+  async graph() {
+    await latency();
+    const g = plant.buildGraph();
+    return { ...g, edges: g.edges.filter((e) => db.edgeDecisions.get(e.id) !== "rejected") };
+  },
+  decideEdge: (id, status, key) => once(key, async () => { await wait(200); db.edgeDecisions.set(id, status); }),
   async audit() { await latency(); return clone(plant.auditLog).reverse(); },
+  async auditPage(cursor) { await latency(); return pageOf([...plant.auditLog].reverse(), cursor); },
+  async exportAudit({ from, to }) {
+    await wait(300);
+    const inRange = plant.auditLog.filter((e) => e.at.slice(0, 10) >= from && e.at.slice(0, 10) <= to);
+    const rows = inRange.map((e) => [e.id, e.at, e.actorId ?? "", e.action, e.subject, e.detail].map((v) => `"${String(v).replaceAll('"', '""')}"`).join(","));
+    return { file: new Blob([["id,at,actor_id,action,subject,detail", ...rows].join("\n")], { type: "text/csv" }), signature: "", keyId: "demo" };
+  },
   async verifyAudit() {
     await wait(700);
     let prev = "0".repeat(64);
@@ -243,12 +280,24 @@ export const mockApi: AtlasApi = {
     return { ok: true, checked: plant.auditLog.length, brokenAt: null };
   },
   async people() { await latency(); return clone(db.people); },
+  async peopleNames() { await latency(); return db.people.filter((p) => p.isActive).map(({ id, name }) => ({ id, name })); },
+  async peoplePage(cursor) { await latency(); return pageOf(db.people, cursor); },
   updateRoles: (id, roles, key) => once(key, async () => {
     await wait(220);
     const p = db.people.find((x) => x.id === id) as Person;
     p.roles = roles;
     return clone(p);
   }),
+  async createUser(input) {
+    await wait(300);
+    if (db.people.some((p) => p.email.toLowerCase() === input.email.toLowerCase())) throw new Error("An account with this e-mail exists.");
+    const person: Person = { id: `u-${Date.now().toString(36)}`, name: input.name, email: input.email, department: "", roles: input.roles,
+      isActive: true, lastActiveAt: null, hue: input.name.length * 37 % 360, mustChangePassword: true };
+    db.people.push(person);
+    return { person: clone(person), password: "demo-one-time-password", totpUri: input.secondFactor ? "otpauth://totp/Atlas:demo?secret=JBSWY3DPEHPK3PXP&issuer=Atlas" : null };
+  },
+  async resetPassword() { await wait(250); return { password: "demo-one-time-password" }; },
+  async resetSecondFactor() { await wait(250); return { totpUri: "otpauth://totp/Atlas:demo?secret=JBSWY3DPEHPK3PXP&issuer=Atlas" }; },
   deleteUser: (id, key) => once(key, async () => { await wait(220); removePerson(id); }),
   changePassword: async (input) => {
     await wait(300);
@@ -258,5 +307,12 @@ export const mockApi: AtlasApi = {
   async settings() { await latency(); return clone(db.settings); },
   updateSettings: (patch: SettingsPatch, key?: string) => once(key, async () => { await wait(250); Object.assign(db.settings, patch); return clone(db.settings); }),
   async license() { await wait(60); return clone(db.license); },
-  async me() { await wait(30); return clone(db.people.find((p) => p.id === plant.ME_ID)!); },
+  installLicense: (content, key) => once(key, async () => {
+    await wait(300);
+    if (!/pro/i.test(content)) throw new Error("The file is not a license file.");
+    db.license.plan = "pro";
+    db.license.features = clone(plant.license.features);
+    return clone(db.license);
+  }),
+  async me() { await wait(30); return { ...clone(db.people.find((p) => p.id === plant.ME_ID)!), orgName: db.settings.orgName }; },
 };

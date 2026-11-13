@@ -24,14 +24,27 @@ export interface Person {
   isActive: boolean;
   lastActiveAt: string | null; // ISO
   hue: number; // stable identity tint
+  /** The password was set by someone else; only changing it is allowed until then. */
+  mustChangePassword: boolean;
+}
+
+/** The signed-in person, with the name of their organization. */
+export interface Me extends Person { orgName: string }
+
+/** What any signed-in person may know of another: no e-mail, no roles. */
+export interface PersonName {
+  id: string;
+  name: string;
 }
 
 export interface DocumentVersion {
   id: string;
   revision: string;
-  state: "indexed" | "superseded" | "processing" | "quarantined";
+  state: "indexed" | "superseded" | "processing" | "retrying" | "quarantined";
   indexedAt: string;
   pages: number;
+  /** The viewer can show this version (a PDF, or a format the server renders to PDF). */
+  preview: boolean;
 }
 
 export interface FieldProvenance {
@@ -55,13 +68,16 @@ export interface Document {
   approvedAt: string | null;
   reviewDueAt: string | null;
   sourceId: string;
+  /** Only documents that came from an upload can be deleted from Atlas. */
+  sourceKind: "folder" | "upload";
   path: string;
   language: string; // "es", "en"… or "" until the server detects it
   currentVersionId: string;
   versions: DocumentVersion[];
   provenance: FieldProvenance[];
   summary: string;
-  sample?: string; // public URL of a synthetic PDF, when one exists
+  sample?: string; // the PDF to show for the current version, when it has a preview
+  originalUrl?: string; // download of the file as it was read
 }
 
 export interface Citation {
@@ -147,7 +163,7 @@ export interface QuarantineItem {
   id: string;
   sourceId: string;
   path: string;
-  reason: "encrypted" | "corrupt" | "unsupported" | "too_large" | "hostile";
+  reason: "encrypted" | "corrupt" | "unsupported" | "too_large" | "hostile" | "retries_exhausted";
   detail: string;
   at: string;
 }
@@ -215,7 +231,12 @@ export interface Settings {
   warnContradictions: boolean;
   notFoundThreshold: number;
   answerLanguage: "user" | "es" | "en";
+  /** Language of the word search: stems and no accents ("es", "en"), or no stems but no accents either ("none"). */
+  searchLanguage: "es" | "en" | "none";
   retentionDays: number;
+  /** What a question gets with the models installed; `answerGaps` says why it is not better. Read-only. */
+  answerMode: "generated" | "passages" | "keyword";
+  answerGaps: string[];
 }
 
 export interface License {
@@ -229,8 +250,7 @@ export type ProFeature = "alerts" | "map" | "sso" | "inherited_acl" | "audit_rep
 export interface Overview {
   today: { questions: number; answered: number; notFound: number; medianLatencyMs: number };
   week: { day: string; questions: number; notFound: number }[];
-  topTopics: { topic: string; count: number }[];
-  documents: { indexed: number; byBand: Record<BandKind, number>; processing: number; quarantined: number };
+  documents: { indexed: number; byBand: Record<BandKind, number>; processing: number; retrying: number; quarantined: number };
   openAlerts: { high: number; medium: number; low: number };
   finding: string;
 }
@@ -251,7 +271,7 @@ export function alertChanges(patch: AlertPatch): Omit<AlertPatch, "note"> {
   delete changes.note; // the note goes to the audit log, not the alert
   return changes;
 }
-export type SettingsPatch = Partial<Pick<Settings, "orgName" | "notFoundThreshold" | "answerLanguage" | "retentionDays" | "requireCitation" | "warnContradictions">>;
+export type SettingsPatch = Partial<Pick<Settings, "orgName" | "notFoundThreshold" | "answerLanguage" | "searchLanguage" | "retentionDays" | "requireCitation" | "warnContradictions">>;
 
 /** Step one of signing in. `needsCode` is false for accounts without a second factor. */
 export interface LoginChallenge { challengeId: string; needsCode: boolean }
@@ -259,9 +279,40 @@ export interface LoginChallenge { challengeId: string; needsCode: boolean }
 /** The first administrator and the organization, created once by /setup. */
 export interface SetupInput { orgName: string; name: string; email: string; password: string }
 
+/** A person to add. `secondFactor` must be true when a role is admin, auditor or curator. */
+export interface NewPerson { name: string; email: string; roles: Role[]; secondFactor: boolean }
+/** The new account and its secrets, which exist only in this answer. */
+export interface CreatedPerson { person: Person; password: string; totpUri: string | null }
+
+/** Fields a person corrects by hand; each one is recorded with source `manual`. The revision is not among them. */
+export interface MetadataPatch {
+  code?: string;
+  title?: string;
+  docType?: DocType;
+  status?: DocStatus;
+  department?: string;
+  ownerId?: string | null;
+  approvedAt?: string | null; // YYYY-MM-DD
+  reviewDueAt?: string | null;
+}
+
+/** The tenant's taxonomy: what a document can be. */
+export interface Catalog {
+  docTypes: { key: string; label: string; band: BandKind }[];
+  entityTypes: { key: string; label: string }[];
+}
+
+/** The days of a signed audit report (both included) and its file format. */
+export interface AuditExportRequest { from: string; to: string; format: "csv" | "jsonl" }
+/** A report and what proves it: the signature (base64) and the id of the key that made it. */
+export interface SignedReport { file: Blob; signature: string; keyId: string }
+
 export interface FolderCheck { ok: boolean; detail: string }
 export interface UploadResult { accepted: number; rejected: { name: string; reason: string }[] }
 export interface NewSource { name: string; kind: "folder"; location: string }
+
+/** One page of a long list, and where the next one starts (null on the last page). */
+export interface Page<T> { items: T[]; nextCursor: string | null }
 
 export interface AtlasApi {
   setupStatus(): Promise<{ setupDone: boolean }>;
@@ -275,34 +326,58 @@ export interface AtlasApi {
   createSource(input: NewSource, key?: string): Promise<Source>;
   uploadFiles(files: File[], key?: string): Promise<UploadResult>;
   overview(): Promise<Overview>;
-  ask(question: string, opts: { conversationId?: string; scope?: string | null }): AsyncIterable<AskEvent>;
+  ask(question: string, opts: { conversationId?: string; signal?: AbortSignal }): AsyncIterable<AskEvent>;
   conversations(): Promise<ConversationSummary[]>;
   conversation(id: string): Promise<{ conversation: Conversation; answers: Answer[] }>;
   feedback(answerId: string, value: "up" | "down", key?: string): Promise<void>;
   documents(filter?: DocumentFilter): Promise<Document[]>;
+  /** One page of documents (50). Pass the `nextCursor` of the previous page to get the next. */
+  documentsPage(filter: DocumentFilter, cursor?: string): Promise<Page<Document>>;
   document(id: string): Promise<Document>;
+  catalog(): Promise<Catalog>;
+  /** Applies a manual correction (editor_metadata); it survives re-indexing. */
+  correctMetadata(id: string, patch: MetadataPatch, key?: string): Promise<Document>;
+  /** Deletes a document that came from an upload. 409 for a document of a folder. */
+  deleteDocument(id: string, key?: string): Promise<void>;
   related(id: string): Promise<{ document: Document; via: GraphEdge["kind"] }[]>;
   sources(): Promise<Source[]>;
   runs(): Promise<IngestionRun[]>;
   quarantine(): Promise<QuarantineItem[]>;
   retryQuarantine(id: string, key?: string): Promise<void>;
   syncSource(id: string, key?: string): Promise<void>;
+  /** Stops reading a folder source and forgets its documents. The folder is not touched. */
+  removeSource(id: string, key?: string): Promise<void>;
   setSourcePaused(id: string, paused: boolean, key?: string): Promise<Source>;
   setSourceAccess(id: string, input: SourceAccessInput, key?: string): Promise<Source>;
   alerts(): Promise<Alert[]>;
   updateAlert(id: string, patch: AlertPatch, key?: string): Promise<Alert>;
+  /** A curator confirms or rejects a link between documents. A rejected link is not drawn again. */
+  decideEdge(id: string, status: "confirmed" | "rejected", key?: string): Promise<void>;
   graph(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }>;
   audit(): Promise<AuditEvent[]>;
+  auditPage(cursor?: string): Promise<Page<AuditEvent>>;
+  /** Pro: a signed report of the audit log. `atlas audit verify-export` checks it against the installation's key. */
+  exportAudit(request: AuditExportRequest): Promise<SignedReport>;
   verifyAudit(): Promise<{ ok: boolean; checked: number; brokenAt: number | null }>;
   people(): Promise<Person[]>;
+  peopleNames(): Promise<PersonName[]>;
+  peoplePage(cursor?: string): Promise<Page<Person>>;
   updateRoles(id: string, roles: Role[], key?: string): Promise<Person>;
+  /** No idempotency key: the answer carries secrets, so the server never replays it. */
+  createUser(input: NewPerson): Promise<CreatedPerson>;
+  /** One-time password for another person; they must choose their own at the next sign-in. No key: never replayed. */
+  resetPassword(id: string): Promise<{ password: string }>;
+  /** New authenticator link for another person who lost their phone. No key: never replayed. */
+  resetSecondFactor(id: string): Promise<{ totpUri: string }>;
   deleteUser(id: string, key?: string): Promise<void>;
   deleteMe(key?: string): Promise<void>;
   changePassword(input: PasswordChange, key?: string): Promise<void>;
   settings(): Promise<Settings>;
   updateSettings(patch: SettingsPatch, key?: string): Promise<Settings>;
   license(): Promise<License>;
-  me(): Promise<Person>;
+  /** Installs a license file (admin). A file that is refused answers 422 with the reason as the error message. */
+  installLicense(content: string, key?: string): Promise<License>;
+  me(): Promise<Me>;
 }
 
 /** Entity nodes other than standards: standards are drawn like documents, the rest as outlined nodes. */

@@ -262,7 +262,11 @@ export interface paths {
         get: operations["getDocument"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * @description Deletes a document that came from an upload: its file leaves the upload folder and the document leaves Atlas
+         *     (lists, search, map). Documents of a folder source answer 409; remove them from the folder instead.
+         */
+        delete: operations["deleteDocument"];
         options?: never;
         head?: never;
         patch?: never;
@@ -309,6 +313,23 @@ export interface paths {
         };
         /** The file to view (PDF), after the ACL check; supports Range */
         get: operations["getVersionFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{id}/versions/{version_id}/original": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The file as it was read, to download, after the ACL check */
+        get: operations["getVersionOriginal"];
         put?: never;
         post?: never;
         delete?: never;
@@ -394,7 +415,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * @description Stops reading a folder source: its documents leave search, lists, the map and related documents. The
+         *     folder itself is not touched. The built-in upload source answers 409; delete its documents instead.
+         */
+        delete: operations["removeSource"];
         options?: never;
         head?: never;
         patch: operations["updateSource"];
@@ -578,6 +603,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Active people of the organization by name, for showing who owns or did something and for choosing an owner or an assignee. No e-mail, no roles. Any signed-in person may read it. */
+        get: operations["listPeople"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -587,7 +629,12 @@ export interface paths {
         };
         get: operations["listUsers"];
         put?: never;
-        post?: never;
+        /**
+         * @description Creates an account with a random one-time password and, when asked or when a role requires it, a second
+         *     factor. The secrets are in this answer only. There is no Idempotency-Key: an answer with secrets is never
+         *     stored for replay, and a retry with the same e-mail answers 409. The person must change the password at the first sign-in.
+         */
+        post: operations["createUser"];
         delete?: never;
         options?: never;
         head?: never;
@@ -627,6 +674,46 @@ export interface paths {
         patch: operations["updateRoles"];
         trace?: never;
     };
+    "/api/v1/users/{id}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Gives the account a new one-time password, ends its sessions and makes the person choose their own at the
+         *     next sign-in. The password is in this answer only, so there is no Idempotency-Key (the answer is never replayed).
+         */
+        post: operations["resetUserPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/totp-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Gives the account a new second factor (for a lost phone) and ends its sessions. The authenticator link is in
+         *     this answer only, so there is no Idempotency-Key.
+         */
+        post: operations["resetUserTotp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -643,6 +730,23 @@ export interface paths {
         patch: operations["updateSettings"];
         trace?: never;
     };
+    "/api/v1/system/signing-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The public key that checks the signature of exported audit reports */
+        get: operations["getSigningKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/license": {
         parameters: {
             query?: never;
@@ -651,7 +755,12 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getLicense"];
-        put?: never;
+        /**
+         * @description Installs a license file. It is checked against the key built into this installation; a file that is not
+         *     valid, was changed, was issued for another installation or has expired answers 422 with the reason in
+         *     `detail`, and the license in force stays as it was.
+         */
+        put: operations["installLicense"];
         post?: never;
         delete?: never;
         options?: never;
@@ -681,6 +790,11 @@ export interface components {
             checks: {
                 [key: string]: string;
             };
+            /**
+             * @description What a question gets with the models installed. A degraded mode does not make the installation not ready.
+             * @enum {string}
+             */
+            answer_mode?: "generated" | "passages" | "keyword";
         };
         Version: {
             version: string;
@@ -756,12 +870,52 @@ export interface components {
             id: string;
             name: string;
             email: string;
+            /** @description The password was set by someone else; only changing it is allowed until then */
+            must_change_password: boolean;
             department: string;
             roles: components["schemas"]["Role"][];
             is_active: boolean;
             /** Format: date-time */
             last_active_at: string | null;
             hue: number;
+        };
+        PersonName: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
+        UserCreate: {
+            name: string;
+            email: string;
+            roles: components["schemas"]["Role"][];
+            /** @description Required (true) when a role is admin, auditor or curator */
+            second_factor: boolean;
+        };
+        UserCreated: {
+            person: components["schemas"]["Person"];
+            /** @description One-time password, shown once */
+            password: string;
+            /** @description Authenticator-app link, shown once; null without a second factor */
+            totp_uri: string | null;
+        };
+        LicenseInstall: {
+            /** @description The text of the license file */
+            content: string;
+        };
+        SigningKey: {
+            key_id: string;
+            /** @description base64 of the 32-byte Ed25519 public key */
+            public_key: string;
+            /** @enum {string} */
+            algorithm: "ed25519ph-sha512";
+        };
+        PasswordReset: {
+            /** @description One-time password, shown once */
+            password: string;
+        };
+        TotpReset: {
+            /** @description Authenticator-app link, shown once */
+            totp_uri: string;
         };
         RolesUpdate: {
             roles: components["schemas"]["Role"][];
@@ -786,10 +940,12 @@ export interface components {
             id: string;
             revision: string;
             /** @enum {string} */
-            state: "indexed" | "superseded" | "processing" | "quarantined";
+            state: "indexed" | "superseded" | "processing" | "retrying" | "quarantined";
             /** Format: date-time */
             indexed_at: string;
             pages: number;
+            /** @description True when the viewer can show this version (a PDF, or a format rendered to PDF) */
+            preview: boolean;
         };
         FieldProvenance: {
             field: string;
@@ -801,6 +957,11 @@ export interface components {
         Document: {
             /** Format: uuid */
             id: string;
+            /**
+             * @description Where the document came from; only uploads can be deleted
+             * @enum {string}
+             */
+            source_kind: "folder" | "upload";
             code: string;
             title: string;
             /** @description key in the tenant's document-type taxonomy */
@@ -938,6 +1099,10 @@ export interface components {
             updated_at: string;
             answer_ids: string[];
         };
+        Me: components["schemas"]["Person"] & {
+            /** @description Name of the person's organization, as set in Settings */
+            org_name: string;
+        };
         ConversationSummary: components["schemas"]["Conversation"] & {
             /** Format: uuid */
             asked_by_id: string;
@@ -1001,7 +1166,7 @@ export interface components {
             source_id: string;
             path: string;
             /** @enum {string} */
-            reason: "encrypted" | "corrupt" | "unsupported" | "too_large" | "hostile";
+            reason: "encrypted" | "corrupt" | "unsupported" | "too_large" | "hostile" | "retries_exhausted";
             detail: string;
             /** Format: date-time */
             at: string;
@@ -1094,13 +1259,27 @@ export interface components {
             not_found_threshold: number;
             /** @enum {string} */
             answer_language: "user" | "es" | "en";
+            /**
+             * @description Language of the word search: stems and no accents (es, en), or no stems but no accents either (none).
+             * @enum {string}
+             */
+            search_language: "es" | "en" | "none";
             retention_days: number;
+            /**
+             * @description Read-only (SettingsPatch cannot change it). generated: written answers with citations. passages: no model writes, the best passages are listed, found by words and meaning. keyword: passages found by words only.
+             * @enum {string}
+             */
+            answer_mode: "generated" | "passages" | "keyword";
+            /** @description Read-only. Why the mode is not better: one fixed sentence per missing or mismatched model. */
+            answer_gaps: string[];
         };
         SettingsPatch: {
             org_name?: string;
             not_found_threshold?: number;
             /** @enum {string} */
             answer_language?: "user" | "es" | "en";
+            /** @enum {string} */
+            search_language?: "es" | "en" | "none";
             retention_days?: number;
             require_citation?: boolean;
             warn_contradictions?: boolean;
@@ -1126,16 +1305,14 @@ export interface components {
                 questions: number;
                 not_found: number;
             }[];
-            top_topics: {
-                topic: string;
-                count: number;
-            }[];
             documents: {
                 indexed: number;
                 by_band: {
                     [key: string]: number;
                 };
                 processing: number;
+                /** @description Versions whose last step failed and will be tried again. */
+                retrying: number;
                 quarantined: number;
             };
             open_alerts: {
@@ -1372,7 +1549,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Person"];
+                    "application/json": components["schemas"]["Me"];
                 };
             };
             default: components["responses"]["Problem"];
@@ -1601,6 +1778,29 @@ export interface operations {
             default: components["responses"]["Problem"];
         };
     };
+    deleteDocument: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
     listRelated: {
         parameters: {
             query?: never;
@@ -1681,6 +1881,30 @@ export interface operations {
                 };
                 content: {
                     "application/pdf": string;
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    getVersionOriginal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The original file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
                 };
             };
             default: components["responses"]["Problem"];
@@ -1805,6 +2029,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["UploadResult"];
                 };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    removeSource: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Problem"];
         };
@@ -2055,9 +2302,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description File */
+            /**
+             * @description The events of the range, oldest first, and a signature of the file. The signature is Ed25519ph over the
+             *     SHA-512 of the file, base64 in Atlas-Signature, made with the key named in Atlas-Signature-Key-Id; the
+             *     public key is at /system/signing-key. `atlas audit verify-export` checks a file against it.
+             */
             200: {
                 headers: {
+                    "Atlas-Signature": string;
+                    "Atlas-Signature-Key-Id": string;
+                    "Content-Disposition": string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -2115,6 +2369,32 @@ export interface operations {
             default: components["responses"]["Problem"];
         };
     };
+    listPeople: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                /** @description Opaque; from the previous page's Next-Cursor header */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description People */
+            200: {
+                headers: {
+                    "Next-Cursor"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonName"][];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
     listUsers: {
         parameters: {
             query?: {
@@ -2136,6 +2416,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Person"][];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserCreated"];
                 };
             };
             default: components["responses"]["Problem"];
@@ -2193,6 +2498,52 @@ export interface operations {
             default: components["responses"]["Problem"];
         };
     };
+    resetUserPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New one-time password */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordReset"];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    resetUserTotp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New authenticator link */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpReset"];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
     getSettings: {
         parameters: {
             query?: never;
@@ -2241,6 +2592,27 @@ export interface operations {
             default: components["responses"]["Problem"];
         };
     };
+    getSigningKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SigningKey"];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
     getLicense: {
         parameters: {
             query?: never;
@@ -2251,6 +2623,33 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description License */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["License"];
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    installLicense: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LicenseInstall"];
+            };
+        };
+        responses: {
+            /** @description The license now in force */
             200: {
                 headers: {
                     [name: string]: unknown;

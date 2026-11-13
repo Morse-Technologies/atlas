@@ -24,6 +24,15 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+describe("settings", () => {
+  it("name the answer mode and what is missing for a better one", async () => {
+    server({ body: { org_name: "Acme", answer_mode: "passages", answer_gaps: ["No reranker: answers are not written"] } });
+    const settings = await httpApi.settings();
+    expect(settings.answerMode).toBe("passages");
+    expect(settings.answerGaps).toEqual(["No reranker: answers are not written"]);
+  });
+});
+
 describe("lists", () => {
   it("reads every page, following Next-Cursor, and asks for the largest page", async () => {
     const calls = server(
@@ -46,10 +55,17 @@ describe("lists", () => {
     expect(query.has("band")).toBe(false);
   });
 
-  it("gives every document the address of its current PDF", async () => {
-    server({ body: [{ id: "d1", current_version_id: "v9", versions: [] }] });
+  it("gives a document with a preview the address of its current PDF", async () => {
+    server({ body: [{ id: "d1", current_version_id: "v9", versions: [{ id: "v9", preview: true }] }] });
     const [doc] = await httpApi.documents();
     expect(doc.sample).toBe("/api/v1/documents/d1/versions/v9/file");
+  });
+
+  it("offers only the original for a document the viewer cannot show", async () => {
+    server({ body: [{ id: "d1", current_version_id: "v9", versions: [{ id: "v9", preview: false }] }] });
+    const [doc] = await httpApi.documents();
+    expect(doc.sample).toBeUndefined();
+    expect(doc.originalUrl).toBe("/api/v1/documents/d1/versions/v9/original");
   });
 });
 
@@ -68,11 +84,18 @@ describe("writes", () => {
     await expect(httpApi.deleteUser("u1", "k")).resolves.toBeUndefined();
   });
 
+  it("accept a 202 with no body when syncing a source or retrying a quarantined file", async () => {
+    server({ status: 202 }, { status: 202 });
+    await expect(httpApi.syncSource("s1", "k")).resolves.toBeUndefined();
+    await expect(httpApi.retryQuarantine("q1", "k")).resolves.toBeUndefined();
+  });
+
   it("upload files as multipart, with no JSON content type", async () => {
-    const calls = server({ body: { accepted: 1, rejected: [] } });
-    const result = await httpApi.uploadFiles([new File(["x"], "a.pdf")]);
+    const calls = server({ status: 202, body: { accepted: 1, rejected: [] } });
+    const result = await httpApi.uploadFiles([new File(["x"], "a.pdf")], "key-up");
     expect(result.accepted).toBe(1);
     expect(calls[0].init.body).toBeInstanceOf(FormData);
+    expect((calls[0].init.headers as Record<string, string>)["Idempotency-Key"]).toBe("key-up");
     expect((calls[0].init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
   });
 });
@@ -95,6 +118,12 @@ describe("errors", () => {
     await expect(httpApi.updateAlert("a", {}, "k")).rejects.toMatchObject({ status: 422, message: "dismissing an alert needs a reason" });
   });
 
+  it("a 429 while signing in says how long to wait, as the server wrote it", async () => {
+    server({ status: 429, body: { title: "Too Many Requests", detail: "Too many attempts. Try again in 42 seconds." } });
+    await expect(httpApi.login("a@b.test", "nope")).rejects.toMatchObject({ status: 429, message: "Too many attempts. Try again in 42 seconds." });
+    expect(replace).not.toHaveBeenCalled();
+  });
+
   it("survive an error body that is not JSON", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>bad gateway</html>", { status: 502, statusText: "Bad Gateway" })));
     await expect(httpApi.me()).rejects.toMatchObject({ status: 502, message: "Bad Gateway" });
@@ -103,9 +132,10 @@ describe("errors", () => {
 
 describe("overview", () => {
   it("fills the bands the server left out with zero", async () => {
-    server({ body: { today: {}, week: [], top_topics: [], documents: { indexed: 3, by_band: { procedure: 3 }, processing: 0, quarantined: 0 }, open_alerts: {}, finding: "" } });
+    server({ body: { today: {}, week: [], documents: { indexed: 3, by_band: { procedure: 3 }, processing: 0, retrying: 2, quarantined: 0 }, open_alerts: {}, finding: "" } });
     const o = await httpApi.overview();
     expect(o.documents.byBand).toEqual({ procedure: 3, manual: 0, norm: 0, erp: 0 });
+    expect(o.documents.retrying).toBe(2);
   });
 });
 
@@ -158,9 +188,9 @@ describe("ask", () => {
 
   it("posts the question as snake_case JSON asking for an event stream", async () => {
     const calls = server({ status: 404 });
-    await expect(drain(httpApi.ask("q", { conversationId: "c1", scope: null }))).rejects.toBeInstanceOf(ApiError);
+    await expect(drain(httpApi.ask("q", { conversationId: "c1" }))).rejects.toBeInstanceOf(ApiError);
     const headers = calls[0].init.headers as Record<string, string>;
     expect(headers.Accept).toBe("text/event-stream");
-    expect(JSON.parse(calls[0].init.body as string)).toEqual({ question: "q", conversation_id: "c1", scope: null });
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ question: "q", conversation_id: "c1" });
   });
 });

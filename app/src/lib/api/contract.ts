@@ -14,6 +14,8 @@ type Fits<W, A> = [W] extends [A] ? true : never;
 
 export const contract: {
   person: Fits<Wire<"Person">, App.Person>;
+  me: Fits<Wire<"Me">, App.Me>;
+  personName: Fits<Wire<"PersonName">, App.PersonName>;
   document: Fits<Wire<"Document">, App.Document>;
   related: Fits<Wire<"Related">, { document: App.Document; via: App.GraphEdge["kind"] }>;
   citation: Fits<Wire<"Citation">, App.Citation>;
@@ -30,14 +32,18 @@ export const contract: {
   settings: Fits<Wire<"Settings">, App.Settings>;
   license: Fits<Wire<"License">, App.License>;
   overview: Fits<Wire<"Overview">, WireOverview>;
+  catalog: Fits<Wire<"Catalog">, App.Catalog>;
+  createdPerson: Fits<Wire<"UserCreated">, App.CreatedPerson>;
+  passwordReset: Fits<Wire<"PasswordReset">, { password: string }>;
+  totpReset: Fits<Wire<"TotpReset">, { totpUri: string }>;
   askMeta: Fits<Wire<"AskMetaEvent">, Extract<App.AskEvent, { type: "meta" }>>;
   askToken: Fits<Wire<"AskTokenEvent">, Extract<App.AskEvent, { type: "token" }>>;
   askDone: Fits<Wire<"AskDoneEvent">, Extract<App.AskEvent, { type: "done" }>>;
   askError: Fits<Wire<"AskErrorEvent">, Extract<App.AskEvent, { type: "error" }>>;
 } = {
-  person: true, document: true, related: true, citation: true, answer: true, conversation: true, conversationDetail: true,
+  person: true, me: true, personName: true, document: true, related: true, citation: true, answer: true, conversation: true, conversationDetail: true,
   source: true, run: true, quarantine: true, alert: true, graph: true, audit: true, verification: true, settings: true,
-  license: true, overview: true, askMeta: true, askToken: true, askDone: true, askError: true,
+  license: true, overview: true, catalog: true, createdPerson: true, passwordReset: true, totpReset: true, askMeta: true, askToken: true, askDone: true, askError: true,
 };
 
 // The other direction: what the app sends. After snake_case conversion the body must fit the request the
@@ -50,6 +56,10 @@ export const requestContract: {
   createSource: Sends<App.NewSource, Request<"SourceCreate">>;
   alertPatch: Sends<App.AlertPatch, Request<"AlertPatch">>;
   settingsPatch: Sends<App.SettingsPatch, Request<"SettingsPatch">>;
+  metadataPatch: Sends<App.MetadataPatch, Request<"MetadataPatch">>;
+  edgeDecision: Sends<{ status: "confirmed" | "rejected" }, Request<"EdgeDecision">>;
+  licenseInstall: Sends<{ content: string }, Request<"LicenseInstall">>;
+  newPerson: Sends<App.NewPerson, Request<"UserCreate">>;
   roles: Sends<{ roles: App.Role[] }, Request<"RolesUpdate">>;
   feedback: Sends<{ value: "up" | "down" }, Request<"FeedbackRequest">>;
   folderCheck: Sends<{ path: string }, Request<"FolderCheckRequest">>;
@@ -58,8 +68,8 @@ export const requestContract: {
   login: Sends<{ email: string; password: string }, Request<"LoginRequest">>;
   verify: Sends<{ challengeId: string; code?: string }, Request<"VerifyRequest">>;
   sourcePatch: Sends<{ paused: boolean }, Request<"SourcePatch">>;
-  ask: Sends<{ question: string; conversationId?: string; scope?: string | null }, Request<"AskRequest">>;
+  ask: Sends<{ question: string; conversationId?: string }, Request<"AskRequest">>;
 } = {
-  setup: true, createSource: true, alertPatch: true, settingsPatch: true, roles: true, feedback: true,
+  setup: true, createSource: true, newPerson: true, licenseInstall: true, edgeDecision: true, metadataPatch: true, alertPatch: true, settingsPatch: true, roles: true, feedback: true,
   folderCheck: true, password: true, sourceAccess: true, login: true, verify: true, sourcePatch: true, ask: true,
 };
