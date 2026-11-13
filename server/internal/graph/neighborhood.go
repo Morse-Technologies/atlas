@@ -69,7 +69,9 @@ type reader interface {
 	edgesOf(ctx context.Context, ids []uuid.UUID) ([]graphdb.ListEdgesOfRow, error)
 	mentionsOf(ctx context.Context, ids []uuid.UUID) ([]graphdb.ListMentionsOfRow, error)
 	factsOf(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]docFacts, error)
-	seeds(ctx context.Context, q Query) ([]uuid.UUID, error)
+	hubs(ctx context.Context) ([]uuid.UUID, error)
+	recent(ctx context.Context, exclude []uuid.UUID, top int) ([]uuid.UUID, error)
+	seedsOf(ctx context.Context, nodeID string) ([]uuid.UUID, error)
 }
 
 // Neighborhood returns the documents around a node, up to the depth asked, with what they mention.
@@ -94,7 +96,7 @@ type walkInput struct {
 // walk expands from the seeds one level at a time until the depth or the node limit is reached.
 func walk(ctx context.Context, r reader, in walkInput) (Map, error) {
 	depth := min(max(in.query.Depth, defaultDepth), maxDepth)
-	seeds, err := r.seeds(ctx, in.query)
+	seeds, err := seedsFor(ctx, r, in.query)
 	if err != nil {
 		return Map{}, err
 	}
@@ -106,6 +108,20 @@ func walk(ctx context.Context, r reader, in walkInput) (Map, error) {
 		}
 	}
 	return b.out, nil
+}
+
+// seedsFor resolves the query into the documents to start from. Without a node it starts from the most linked
+// documents and, when there are fewer than hubSeeds (a new installation has no links yet), the newest ones.
+func seedsFor(ctx context.Context, r reader, q Query) ([]uuid.UUID, error) {
+	if q.NodeID != "" {
+		return r.seedsOf(ctx, q.NodeID)
+	}
+	hubs, err := r.hubs(ctx)
+	if err != nil || len(hubs) >= hubSeeds {
+		return hubs, err
+	}
+	recent, err := r.recent(ctx, hubs, hubSeeds-len(hubs))
+	return append(hubs, recent...), err
 }
 
 type mapBuilder struct {
@@ -272,23 +288,29 @@ func (d dbReader) factsOf(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]d
 	return factsOf(ctx, d.q, ids)
 }
 
-// seeds resolves the node asked for into the documents to start from.
-func (d dbReader) seeds(ctx context.Context, q Query) ([]uuid.UUID, error) {
+func (d dbReader) hubs(ctx context.Context) ([]uuid.UUID, error) {
+	return d.q.ListHubs(ctx, hubSeeds)
+}
+
+func (d dbReader) recent(ctx context.Context, exclude []uuid.UUID, top int) ([]uuid.UUID, error) {
+	return d.q.ListRecentDocs(ctx, graphdb.ListRecentDocsParams{Ids: exclude, Top: int32(top)})
+}
+
+// seedsOf resolves the node asked for into the documents to start from.
+func (d dbReader) seedsOf(ctx context.Context, nodeID string) ([]uuid.UUID, error) {
 	switch {
-	case q.NodeID == "":
-		return d.q.ListHubs(ctx, hubSeeds)
-	case strings.HasPrefix(q.NodeID, prefixDocument):
-		id, err := uuid.Parse(strings.TrimPrefix(q.NodeID, prefixDocument))
+	case strings.HasPrefix(nodeID, prefixDocument):
+		id, err := uuid.Parse(strings.TrimPrefix(nodeID, prefixDocument))
 		if err != nil {
 			return nil, fmt.Errorf("node id: %w", errs.ErrInvalid)
 		}
 		return []uuid.UUID{id}, nil
-	case strings.HasPrefix(q.NodeID, prefixDept):
-		return d.q.ListDocsInDepartment(ctx, graphdb.ListDocsInDepartmentParams{Department: strings.TrimPrefix(q.NodeID, prefixDept), Top: deptSeeds})
+	case strings.HasPrefix(nodeID, prefixDept):
+		return d.q.ListDocsInDepartment(ctx, graphdb.ListDocsInDepartmentParams{Department: strings.TrimPrefix(nodeID, prefixDept), Top: deptSeeds})
 	}
-	kind, label, ok := strings.Cut(q.NodeID, ":")
+	kind, label, ok := strings.Cut(nodeID, ":")
 	if !ok {
-		return nil, fmt.Errorf("node id %q: %w", q.NodeID, errs.ErrInvalid)
+		return nil, fmt.Errorf("node id %q: %w", nodeID, errs.ErrInvalid)
 	}
 	return d.q.ListDocsMentioning(ctx, graphdb.ListDocsMentioningParams{EntityType: kind, Label: label})
 }

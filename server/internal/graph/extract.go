@@ -3,9 +3,10 @@
 package graph
 
 import (
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/morse/atlas/server/internal/platform/codes"
 )
 
 // Entity types the extractors produce. "code" is not shown as an entity: it only links documents.
@@ -20,13 +21,6 @@ type Mention struct {
 	Label string
 	Count int
 }
-
-var (
-	// standardPattern finds ISO standards with an optional year: ISO 9001, ISO-9001:2015.
-	standardPattern = regexp.MustCompile(`\b(?i:iso)[ -]?(\d{3,6})(?::(\d{4}))?\b`)
-	// codePattern finds document codes such as PNT-014.
-	codePattern = regexp.MustCompile(`\b[A-Z]{2,6}-\d{1,5}\b`)
-)
 
 // Extract returns the standards and document codes named in texts, in a stable order.
 func Extract(texts []string) []Mention {
@@ -50,12 +44,10 @@ func Extract(texts []string) []Mention {
 
 // countIn adds the standards and codes of one text to counts.
 func countIn(text string, counts map[Mention]int) {
-	for _, m := range standardPattern.FindAllStringSubmatch(text, -1) {
+	for _, m := range codes.Standards(text) {
 		counts[Mention{Type: EntityStandard, Label: standardLabel(m)}]++
 	}
-	// standards are masked first, or "ISO-9001" would also be taken for a document code
-	rest := standardPattern.ReplaceAllString(text, " ")
-	for _, code := range codePattern.FindAllString(rest, -1) {
+	for _, code := range codes.Documents(text) {
 		counts[Mention{Type: EntityCode, Label: code}]++
 	}
 }

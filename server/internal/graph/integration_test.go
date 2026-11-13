@@ -144,6 +144,28 @@ func TestCorrectingACodeLinksTheDocumentsThatNowShareIt(t *testing.T) {
 	}
 }
 
+// Extraction gives a document its code when its version is read, and announces it: the documents that name that code
+// must then be linked to it.
+func TestExtractedCodesLinkDocuments(t *testing.T) {
+	w := newWorld(t)
+	owner := uuid.New()
+	naming := w.document("PNT-001", "Antes de empezar lea PNT-014.", &owner)
+	extracted := w.document("", "Montaje del husillo.", &owner)
+	if before, _ := w.svc.RelatedTo(w.ctx, w.who, naming); len(before) != 0 {
+		t.Fatalf("links before the code is read: %+v", before)
+	}
+	w.exec(func(tx pgx.Tx) error {
+		_, err := tx.Exec(w.ctx, `UPDATE documents.documents SET code = 'PNT-014' WHERE id = $1`, extracted)
+		return err
+	})
+	if err := w.svc.OnDocumentChanged(w.ctx, events.DocumentChanged{TenantID: w.who.TenantID, DocumentID: extracted}); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := w.svc.RelatedTo(w.ctx, w.who, naming); err != nil || len(after) != 1 || after[0].DocumentID != extracted {
+		t.Fatalf("links after the code is read: %+v, %v", after, err)
+	}
+}
+
 func TestNoOwnerAlertClosesWhenAnOwnerIsSet(t *testing.T) {
 	w := newWorld(t)
 	doc := w.document("PNT-001", "texto", nil)
@@ -290,5 +312,62 @@ func TestADocumentOfARestrictedSourceIsNotOnOthersAlertsOrMap(t *testing.T) {
 	}
 	if alerts, nodes := seen(other); alerts != 0 || nodes != 0 {
 		t.Fatalf("someone else sees %d alerts and %d nodes; the document must not exist for them", alerts, nodes)
+	}
+}
+
+func TestMapShowsDocumentsWithoutLinks(t *testing.T) {
+	w := newWorld(t)
+	w.document("PNT-001", "nothing here names another document", nil)
+	w.document("PNT-002", "nor does this one", nil)
+	got, err := w.svc.Neighborhood(w.ctx, w.who, Query{})
+	if err != nil || nodesByKind(got, KindDocument) != 2 || len(got.Edges) != 0 {
+		t.Fatalf("map = %d documents, %d links, %v; want both documents and no links", nodesByKind(got, KindDocument), len(got.Edges), err)
+	}
+}
+
+func TestRelatedLeavesOutRejectedLinks(t *testing.T) {
+	w := newWorld(t)
+	a := w.document("PNT-001", "Ver PNT-002 y PNT-003.", nil)
+	b := w.document("PNT-002", "texto", nil)
+	c := w.document("PNT-003", "texto", nil)
+	links, err := w.svc.RelatedTo(w.ctx, w.who, a)
+	if err != nil || len(links) != 2 {
+		t.Fatalf("links %+v, %v; want the two documents A names", links, err)
+	}
+	if back, _ := w.svc.RelatedTo(w.ctx, w.who, b); len(back) != 1 || back[0].DocumentID != a {
+		t.Fatalf("links of B %+v; a reference counts in both directions", back)
+	}
+	m, _ := w.svc.Neighborhood(w.ctx, w.who, Query{NodeID: prefixDocument + a.String()})
+	for _, e := range m.Edges {
+		if e.Target == prefixDocument+c.String() {
+			if err := w.svc.DecideEdge(w.ctx, w.who, Decision{EdgeID: e.ID, Status: "rejected"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if after, _ := w.svc.RelatedTo(w.ctx, w.who, a); len(after) != 1 || after[0].DocumentID != b {
+		t.Fatalf("links after rejecting A-C: %+v; want only B", after)
+	}
+}
+
+func TestRelatedNeverNamesADocumentThePersonCannotRead(t *testing.T) {
+	w := newWorld(t)
+	reader, other := uuid.New(), uuid.New()
+	var set uuid.UUID
+	w.exec(func(tx pgx.Tx) error {
+		return tx.QueryRow(w.ctx, `INSERT INTO access.acl_sets (origin, allow) VALUES ('source', $1) RETURNING id`, []uuid.UUID{reader}).Scan(&set)
+	})
+	open := w.document("PNT-001", "Ver PNT-002.", nil)
+	secret := w.document("PNT-002", "salary bands", nil)
+	w.exec(func(tx pgx.Tx) error {
+		_, err := tx.Exec(w.ctx, `UPDATE documents.documents SET acl_set_id = $1 WHERE id = $2`, set, secret)
+		return err
+	})
+	as := func(user uuid.UUID) Actor { return Actor{TenantID: w.who.TenantID, UserID: user} }
+	if links, err := w.svc.RelatedTo(w.ctx, as(reader), open); err != nil || len(links) != 1 {
+		t.Fatalf("the reader sees %+v, %v; want the link", links, err)
+	}
+	if links, err := w.svc.RelatedTo(w.ctx, as(other), open); err != nil || len(links) != 0 {
+		t.Fatalf("someone else sees %+v, %v; the restricted document must not be named", links, err)
 	}
 }

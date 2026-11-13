@@ -37,7 +37,8 @@ func (f fakes) Snapshot(context.Context, uuid.UUID) (catalog.Snapshot, error) {
 
 func panel(t *testing.T, f fakes) Panel {
 	t.Helper()
-	s := &Service{Questions: f, Library: f, Quarantine: f, Alerts: f, Taxonomy: f, Now: func() time.Time { return today.Add(15 * time.Hour) }}
+	s := &Service{Questions: f, Library: f, Quarantine: f, Alerts: f, Taxonomy: f, AlertsEnabled: func() bool { return true },
+		Now: func() time.Time { return today.Add(15 * time.Hour) }}
 	p, err := s.Panel(context.Background(), db.Scope{Tenant: uuid.New(), User: uuid.New()})
 	if err != nil {
 		t.Fatal(err)
@@ -57,9 +58,9 @@ func TestTheWeekHasFourteenDaysEndingTodayWithZerosForQuietDays(t *testing.T) {
 }
 
 func TestDocumentsAreCountedByBand(t *testing.T) {
-	f := fakes{counts: documents.Counts{ByType: map[string]int{"procedure": 3, "standard": 2, "unheard-of": 1}, Processing: 4}, quarantine: 2}
+	f := fakes{counts: documents.Counts{ByType: map[string]int{"procedure": 3, "standard": 2, "unheard-of": 1}, Processing: 4, Retrying: 3}, quarantine: 2}
 	d := panel(t, f).Documents
-	if d.Indexed != 6 || d.ByBand["procedure"] != 3 || d.ByBand["norm"] != 2 || d.ByBand["manual"] != 1 || d.Processing != 4 || d.Quarantined != 2 {
+	if d.Indexed != 6 || d.ByBand["procedure"] != 3 || d.ByBand["norm"] != 2 || d.ByBand["manual"] != 1 || d.Processing != 4 || d.Retrying != 3 || d.Quarantined != 2 {
 		t.Fatalf("documents = %+v", d)
 	}
 }
@@ -81,5 +82,23 @@ func TestTheFindingPutsHighAlertsFirstThenQuarantineThenUnansweredQuestions(t *t
 		if got := panel(t, c.f).Finding; got != c.want {
 			t.Errorf("%s: finding %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// failingAlerts fails the test if the panel asks for alerts.
+type failingAlerts struct{ t *testing.T }
+
+func (f failingAlerts) OpenAlerts(context.Context, db.Scope) (map[string]int, error) {
+	f.t.Error("alerts were asked for although the license does not include them")
+	return nil, nil
+}
+
+func TestPanelSkipsAlertsWithoutTheFeature(t *testing.T) {
+	f := fakes{alerts: map[string]int{"high": 2}}
+	s := &Service{Questions: f, Library: f, Quarantine: f, Alerts: failingAlerts{t}, Taxonomy: f,
+		AlertsEnabled: func() bool { return false }, Now: func() time.Time { return today }}
+	p, err := s.Panel(context.Background(), db.Scope{Tenant: uuid.New(), User: uuid.New()})
+	if err != nil || p.OpenAlerts["high"] != 0 || p.Finding != "" {
+		t.Fatalf("panel = %+v, %v; want no alert counts and no sentence about them", p, err)
 	}
 }

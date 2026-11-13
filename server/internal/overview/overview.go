@@ -42,6 +42,7 @@ type Documents struct {
 	Indexed     int
 	ByBand      map[string]int
 	Processing  int
+	Retrying    int
 	Quarantined int
 }
 
@@ -86,9 +87,11 @@ type Service struct {
 	Alerts     Alerts
 	Taxonomy   Taxonomy
 	Now        func() time.Time
+	// AlertsEnabled says whether the license includes alerts. Without it (or when nil) alerts are not asked for.
+	AlertsEnabled func() bool
 }
 
-// Panel reads the numbers of one tenant. Alerts are optional: without the feature the counts are zero.
+// Panel reads the numbers of one tenant. Alerts are optional: without the feature they are not read and the counts are zero.
 func (s *Service) Panel(ctx context.Context, scope db.Scope) (Panel, error) {
 	tenant := scope.Tenant
 	now := s.Now().UTC()
@@ -102,13 +105,20 @@ func (s *Service) Panel(ctx context.Context, scope db.Scope) (Panel, error) {
 	if err != nil {
 		return Panel{}, err
 	}
-	alerts, err := s.Alerts.OpenAlerts(ctx, scope)
+	alerts, err := s.openAlerts(ctx, scope)
 	if err != nil {
 		return Panel{}, err
 	}
 	p := Panel{Today: todayOf(activity, today), Week: fillDays(activity.Days, today), Documents: docs, OpenAlerts: alerts}
 	p.Finding = finding(p)
 	return p, nil
+}
+
+func (s *Service) openAlerts(ctx context.Context, scope db.Scope) (map[string]int, error) {
+	if s.AlertsEnabled == nil || !s.AlertsEnabled() {
+		return map[string]int{}, nil
+	}
+	return s.Alerts.OpenAlerts(ctx, scope)
 }
 
 func (s *Service) documents(ctx context.Context, scope db.Scope) (Documents, error) {
@@ -125,7 +135,7 @@ func (s *Service) documents(ctx context.Context, scope db.Scope) (Documents, err
 	if err != nil {
 		return Documents{}, fmt.Errorf("quarantine count: %w", err)
 	}
-	out := Documents{ByBand: map[string]int{}, Processing: counts.Processing, Quarantined: quarantined}
+	out := Documents{ByBand: map[string]int{}, Processing: counts.Processing, Retrying: counts.Retrying, Quarantined: quarantined}
 	for docType, n := range counts.ByType {
 		out.ByBand[tax.BandOf(docType)] += n
 		out.Indexed += n

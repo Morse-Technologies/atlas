@@ -462,6 +462,47 @@ func (q *Queries) ListHubs(ctx context.Context, top int32) ([]uuid.UUID, error) 
 	return items, nil
 }
 
+const listLinksOf = `-- name: ListLinksOf :many
+SELECT l.other, l.kind FROM (
+  SELECT DISTINCT (CASE WHEN src = $1 THEN dst ELSE src END)::uuid AS other, kind
+  FROM graph.edges
+  WHERE (src = $1 OR dst = $1) AND kind IN ('references', 'duplicates') AND status <> 'rejected'
+) l JOIN documents.v_documents d ON d.id = l.other
+ORDER BY l.kind, l.other LIMIT $2
+`
+
+type ListLinksOfParams struct {
+	DocumentID uuid.UUID
+	Top        int32
+}
+
+type ListLinksOfRow struct {
+	Other uuid.UUID
+	Kind  string
+}
+
+// The documents a document references or duplicates, in either direction, once each. Rejected links are left out,
+// and so is any document the person cannot read: v_documents is read as the person, so it is filtered by the row-level rules.
+func (q *Queries) ListLinksOf(ctx context.Context, arg ListLinksOfParams) ([]ListLinksOfRow, error) {
+	rows, err := q.db.Query(ctx, listLinksOf, arg.DocumentID, arg.Top)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLinksOfRow
+	for rows.Next() {
+		var i ListLinksOfRow
+		if err := rows.Scan(&i.Other, &i.Kind); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMentionsOf = `-- name: ListMentionsOf :many
 SELECT document_id, entity_type, label, count FROM graph.mentions
 WHERE document_id = ANY($1::uuid[]) AND entity_type <> 'code' ORDER BY document_id, entity_type, label
@@ -492,6 +533,36 @@ func (q *Queries) ListMentionsOf(ctx context.Context, documentIds []uuid.UUID) (
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentDocs = `-- name: ListRecentDocs :many
+SELECT id FROM documents.v_documents WHERE id <> ALL(COALESCE($1::uuid[], '{}')) ORDER BY created_at DESC, id LIMIT $2
+`
+
+type ListRecentDocsParams struct {
+	Ids []uuid.UUID
+	Top int32
+}
+
+// The newest documents, for a map with no links yet. COALESCE: a nil Go slice reaches SQL as NULL.
+func (q *Queries) ListRecentDocs(ctx context.Context, arg ListRecentDocsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listRecentDocs, arg.Ids, arg.Top)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

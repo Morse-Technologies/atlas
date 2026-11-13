@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,8 +16,18 @@ import (
 // verifyBatch is how many events Verify reads at a time, so a long log never sits in memory at once.
 const verifyBatch = 1000
 
-// Service reads and checks the log of one tenant at a time.
-type Service struct{ DB *db.DB }
+// Service reads, checks and exports the log of one tenant at a time.
+type Service struct {
+	DB  *db.DB
+	Now func() time.Time // nil: the real clock
+}
+
+func (s *Service) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
+}
 
 // Page selects events older than Before (0: from the newest). Size is the page size.
 type Page struct {

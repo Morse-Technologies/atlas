@@ -61,6 +61,12 @@ func Record(ctx context.Context, tx pgx.Tx, entry Entry) error {
 	return insert(ctx, q, event)
 }
 
+// Append records an event that is not part of any change to the database (a report was exported, a file was
+// checked), in a transaction of its own. A change records its event with Record, in the change's transaction.
+func (s *Service) Append(ctx context.Context, tenant uuid.UUID, entry Entry) error {
+	return s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error { return Record(ctx, tx, entry) })
+}
+
 func lockAndReadTip(ctx context.Context, q *auditdb.Queries) (string, error) {
 	tenant, err := q.CurrentTenant(ctx)
 	if err != nil {

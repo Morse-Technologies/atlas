@@ -15,7 +15,8 @@ type memory struct {
 	edges    []graphdb.ListEdgesOfRow
 	mentions []graphdb.ListMentionsOfRow
 	facts    map[uuid.UUID]docFacts
-	hubs     []uuid.UUID
+	hubIDs   []uuid.UUID
+	newest   []uuid.UUID
 }
 
 func (m memory) edgesOf(_ context.Context, ids []uuid.UUID) ([]graphdb.ListEdgesOfRow, error) {
@@ -42,11 +43,20 @@ func (m memory) factsOf(context.Context, []uuid.UUID) (map[uuid.UUID]docFacts, e
 	return m.facts, nil
 }
 
-func (m memory) seeds(_ context.Context, q Query) ([]uuid.UUID, error) {
-	if q.NodeID == "" {
-		return m.hubs, nil
+func (m memory) hubs(context.Context) ([]uuid.UUID, error) { return m.hubIDs, nil }
+
+func (m memory) recent(_ context.Context, exclude []uuid.UUID, top int) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	for _, id := range m.newest {
+		if !contains(exclude, id) && len(out) < top {
+			out = append(out, id)
+		}
 	}
-	id, _ := uuid.Parse(q.NodeID[len(prefixDocument):])
+	return out, nil
+}
+
+func (m memory) seedsOf(_ context.Context, nodeID string) ([]uuid.UUID, error) {
+	id, _ := uuid.Parse(nodeID[len(prefixDocument):])
 	return []uuid.UUID{id}, nil
 }
 
@@ -128,7 +138,7 @@ func TestEveryEdgeJoinsTwoNodesOfTheMap(t *testing.T) {
 
 func TestTheMapStopsAtTheNodeLimit(t *testing.T) {
 	m, ids := chain(maxNodes + 100)
-	m.hubs = ids
+	m.hubIDs = ids
 	got, _ := walk(context.Background(), m, walkInput{query: Query{Depth: 3}, bandOf: band})
 	if len(got.Nodes) > maxNodes {
 		t.Fatalf("%d nodes, the limit is %d", len(got.Nodes), maxNodes)
@@ -137,10 +147,30 @@ func TestTheMapStopsAtTheNodeLimit(t *testing.T) {
 
 func TestNoNodeAsksForTheMostConnectedDocuments(t *testing.T) {
 	m, ids := chain(3)
-	m.hubs = ids[1:2]
+	m.hubIDs = ids[1:2]
 	got, _ := walk(context.Background(), m, walkInput{query: Query{}, bandOf: band})
 	if nodesByKind(got, KindDocument) != 3 {
 		t.Fatalf("documents %d; the hub and both neighbours", nodesByKind(got, KindDocument))
+	}
+}
+
+func TestWithoutLinksTheMapStartsFromTheNewestDocuments(t *testing.T) {
+	m, ids := chain(3)
+	m.edges = nil
+	m.newest = ids
+	got, _ := walk(context.Background(), m, walkInput{query: Query{}, bandOf: band})
+	if nodesByKind(got, KindDocument) != 3 {
+		t.Fatalf("documents %d; want the 3 documents even though nothing links them", nodesByKind(got, KindDocument))
+	}
+}
+
+func TestTheNewestDocumentsDoNotRepeatTheHubs(t *testing.T) {
+	m, ids := chain(3)
+	m.hubIDs = ids[:1]
+	m.newest = ids
+	seeds, _ := seedsFor(context.Background(), m, Query{})
+	if len(seeds) != 3 || seeds[0] != ids[0] {
+		t.Fatalf("seeds %v; want the hub first, then the other two once each", seeds)
 	}
 }
 

@@ -64,6 +64,53 @@ func (q *Queries) LastHash(ctx context.Context) (string, error) {
 	return hash, err
 }
 
+const listEventsBetween = `-- name: ListEventsBetween :many
+SELECT id, tenant_id, at, actor_id, action, subject, detail, prev_hash, hash FROM audit.events WHERE id > $1 AND at >= $2 AND at < $3 ORDER BY id LIMIT $4
+`
+
+type ListEventsBetweenParams struct {
+	After    int64
+	FromAt   time.Time
+	UntilAt  time.Time
+	PageSize int32
+}
+
+// The events from a day on (from_at, inclusive) to the end of another (until_at, exclusive), oldest first.
+func (q *Queries) ListEventsBetween(ctx context.Context, arg ListEventsBetweenParams) ([]AuditEvent, error) {
+	rows, err := q.db.Query(ctx, listEventsBetween,
+		arg.After,
+		arg.FromAt,
+		arg.UntilAt,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditEvent
+	for rows.Next() {
+		var i AuditEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.At,
+			&i.ActorID,
+			&i.Action,
+			&i.Subject,
+			&i.Detail,
+			&i.PrevHash,
+			&i.Hash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsNewestFirst = `-- name: ListEventsNewestFirst :many
 SELECT id, tenant_id, at, actor_id, action, subject, detail, prev_hash, hash FROM audit.events WHERE id < $1 ORDER BY id DESC LIMIT $2
 `
