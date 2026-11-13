@@ -1,21 +1,63 @@
 "use client";
-import { useMemo } from "react";
-import { newKey, undoable, useDocuments, useFeature, useQuarantine, useRuns, useSourceActions, useSources } from "@/features/hooks";
+import { FolderPlus, Upload } from "lucide-react";
+import { useMemo, useState } from "react";
+import { newKey, undoable, useCanEditMetadata, useDocuments, useFeature, useIsAdmin, useMe, useQuarantine, useRuns, useSourceActions, useSources } from "@/features/hooks";
 import { fmtAgo, fmtNum, plural } from "@/lib/format";
-import type { BandKind } from "@/lib/api/types";
-import { Card, ErrorState, KpiStrip, LoadingRows, PageHeader } from "@/ui/cells";
+import type { BandKind, IngestionRun } from "@/lib/api/types";
+import { Button } from "@/ui/atoms";
+import { Card, EmptyState, ErrorState, KpiStrip, LoadingRows, PageHeader } from "@/ui/cells";
+import { AddFolder } from "./AddFolder";
+import { UploadSheet } from "./UploadSheet";
 import { SourceAccess } from "./SourceAccess";
 import { QuarantineList, RunsTable, SourceFlow } from "@/ui/organisms/Sources";
 import { Canvas } from "@/ui/templates/ShellLayout";
 
-/** Screen 5: is everything being read, and what failed? */
+/** Scans still running first, then the newest finished. */
+const runningFirst = (a: IngestionRun, b: IngestionRun) =>
+  Number(b.finishedAt === null) - Number(a.finishedAt === null) || (b.finishedAt ?? "").localeCompare(a.finishedAt ?? "");
+
+/** Screen 5. Administrators see everything; editors only the upload; nobody else's requests reach the server. */
 export function SourcesScreen() {
+  const me = useMe();
+  const isAdmin = useIsAdmin();
+  const canUpload = useCanEditMetadata();
+  if (me.isPending) return <Canvas><LoadingRows rows={3} pitch="h-14" /></Canvas>;
+  if (isAdmin) return <SourcesAdmin />;
+  return canUpload ? <UploadOnly /> : <NotForRole />;
+}
+
+function UploadOnly() {
+  const [uploading, setUploading] = useState(false);
+  return (
+    <Canvas>
+      <PageHeader title="Sources" subline="Upload files for Atlas to read. Folders are managed by an administrator." actions={
+        <Button variant="outline" onClick={() => setUploading(true)}><Upload />Upload files</Button>
+      } />
+      <UploadSheet open={uploading} onOpenChange={setUploading} />
+    </Canvas>
+  );
+}
+
+function NotForRole() {
+  return (
+    <Canvas>
+      <PageHeader title="Sources" />
+      <EmptyState>Only administrators and editors use this screen.</EmptyState>
+    </Canvas>
+  );
+}
+
+/** Is everything being read, and what failed? */
+function SourcesAdmin() {
   const sources = useSources();
   const runs = useRuns();
   const quarantine = useQuarantine();
   const docs = useDocuments({});
   const pro = useFeature("sharepoint");
-  const { sync, pause, retry } = useSourceActions();
+  const { sync, pause, retry, remove } = useSourceActions();
+  const [adding, setAdding] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const canUpload = useCanEditMetadata();
 
   const names = useMemo(() => Object.fromEntries((sources.data ?? []).map((s) => [s.id, s.name])), [sources.data]);
   const docCounts = useMemo(() => (docs.data ?? []).reduce<Record<string, number>>((m, d) => ((m[d.sourceId] = (m[d.sourceId] ?? 0) + 1), m), {}), [docs.data]);
@@ -35,7 +77,12 @@ export function SourcesScreen() {
 
   return (
     <Canvas>
-      <PageHeader title="Sources" subline={subline} />
+      <PageHeader title="Sources" subline={subline} actions={<>
+        {canUpload && <Button variant="outline" onClick={() => setUploading(true)}><Upload />Upload files</Button>}
+        <Button variant="outline" onClick={() => setAdding(true)}><FolderPlus />Add folder</Button>
+      </>} />
+      <AddFolder open={adding} onOpenChange={setAdding} />
+      <UploadSheet open={uploading} onOpenChange={setUploading} />
       <KpiStrip className="mt-6" items={[
         { label: "Sources syncing", value: sources.data ? `${sources.data.filter((s) => s.status === "active").length} of ${sources.data.length}` : "…", note: failing.length ? `${failing.length} needs attention` : "No errors" },
         { label: "Documents searchable", value: docs.data ? fmtNum(docs.data.length) : "…" },
@@ -56,6 +103,7 @@ export function SourcesScreen() {
                 undo: () => pause.mutateAsync({ id, paused: !paused, key: newKey() }),
               }).catch(() => {});
             }}
+            onRemove={(id) => remove.mutate({ id, key: newKey() })}
             busyId={sync.isPending ? sync.variables?.id : null}
           />
         )}
@@ -66,7 +114,7 @@ export function SourcesScreen() {
       <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         <Card id="runs-h" title="Recent runs" aside={runs.data ? `Last ${runs.data.length}, newest first` : undefined}>
           {runs.isPending ? <LoadingRows rows={6} pitch="h-11" /> : runs.isError ? <ErrorState what="runs" onRetry={() => runs.refetch()} />
-            : <RunsTable runs={[...runs.data].sort((a, b) => (b.finishedAt ?? "").localeCompare(a.finishedAt ?? ""))} names={names} />}
+            : <RunsTable runs={[...runs.data].sort(runningFirst)} names={names} />}
         </Card>
         <Card id="q-h" title="Quarantine" aside={`${q} ${q === 1 ? "file" : "files"}`}>
           {quarantine.isPending ? <LoadingRows rows={3} pitch="h-20" /> : quarantine.isError ? <ErrorState what="quarantine" onRetry={() => quarantine.refetch()} /> : (

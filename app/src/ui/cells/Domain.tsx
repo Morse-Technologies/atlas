@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import type { Alert, AlertStatus, Citation, DocStatus, Document, Person, ProvenanceSource, Severity, Source } from "@/lib/api/types";
+import type { Alert, AlertStatus, Citation, DocStatus, Document, PersonName, ProvenanceSource, Severity, Source } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { Avatar, Band, Dot, Pill, type Tone } from "@/ui/atoms";
 
@@ -63,14 +63,14 @@ export function ProvenanceTag({ source, confidence }: { source: ProvenanceSource
 }
 
 /* Document furniture: rev, owner, department, status. Same order on every screen, one line, department truncates first. */
-export function DocFurniture({ doc, owner, className }: { doc: Document; owner?: Person | null; className?: string }) {
+export function DocFurniture({ doc, owner, className }: { doc: Document; owner?: PersonName | null; className?: string }) {
   const rev = doc.versions.find((v) => v.id === doc.currentVersionId)?.revision ?? "n/a";
   return (
     <div className={cn("flex min-w-0 items-center gap-x-2 text-small whitespace-nowrap text-muted", className)}>
       <span className="flex-none num">rev. {rev}</span>
       <span aria-hidden className="h-3 w-px flex-none bg-border" />
       <span className="inline-flex flex-none items-center gap-1.5">
-        {owner ? <><Avatar name={owner.name} hue={owner.hue} size={20} />{owner.name}</> : <span className="text-[var(--pill-warning-ink)]">No owner</span>}
+        {owner ? <><Avatar name={owner.name} size={20} />{owner.name}</> : <span className="text-[var(--pill-warning-ink)]">No owner</span>}
       </span>
       <span aria-hidden className="h-3 w-px flex-none bg-border" />
       <span className="min-w-0 truncate">{doc.department}</span>
@@ -112,7 +112,7 @@ export const revOf = (d: Document) => d.versions.find((v) => v.id === d.currentV
 export function CitationCard({
   citation, doc, owner, active, onHover, href,
 }: {
-  citation: Citation; doc: Document; owner?: Person | null; active?: boolean;
+  citation: Citation; doc: Document; owner?: PersonName | null; active?: boolean;
   onHover?: (n: number | null) => void; href: string;
 }) {
   return (

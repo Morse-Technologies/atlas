@@ -4,37 +4,31 @@ import { useMod } from "@/lib/platform";
 import { useRouter, useSearchParams } from "next/navigation";
 import { History, SquarePen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { newKey, useAskStream, useConversation, useConversations, useDocuments, useFeedback, usePeople } from "@/features/hooks";
-import type { Answer, Document, Person } from "@/lib/api/types";
+import { newKey, useAskStream, useConversation, useConversations, useDocuments, useFeedback, usePeopleNames } from "@/features/hooks";
+import type { Answer, Document, PersonName } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
+import { demo } from "@/lib/demo";
 import { Button, Kbd, Mark, Skeleton, Tooltip, buttonStyles } from "@/ui/atoms";
 import { ErrorState, Sheet } from "@/ui/cells";
 import { AskComposer, AssistantMessage, HistoryList, UserMessage } from "@/ui/organisms/Assistant";
 
-const ALL_SCOPES = "all";
-const SCOPES = [ALL_SCOPES, "Line 1", "Line 2", "Line 3"];
 const HISTORY_SKELETON_ROWS = 5;
 const SUGGESTION_DELAY_MS = 120;
 const SUGGESTION_STAGGER_MS = 50;
-const SUGGESTIONS = [
-  "What's the tightening torque for the spindle on CNC-07?",
-  "What do I need to lock out before opening the CNC-08 guard?",
-  "What coolant concentration should CNC-07 run at?",
-];
 
 function useLookups() {
   const { data: docs } = useDocuments({});
-  const { data: people } = usePeople();
+  const { data: people } = usePeopleNames();
   return {
     docs: useMemo(() => new Map<string, Document>((docs ?? []).map((d) => [d.id, d])), [docs]),
-    people: useMemo(() => new Map<string, Person>((people ?? []).map((p) => [p.id, p])), [people]),
+    people: useMemo(() => new Map<string, PersonName>((people ?? []).map((p) => [p.id, p])), [people]),
   };
 }
 
 type Lookups = ReturnType<typeof useLookups>;
 
 /** One chat: the answers asked in this visit, the live stream, and the question from `?q=` asked once. */
-function useAskSession(conversationId: string | undefined, scope: string) {
+function useAskSession(conversationId: string | undefined) {
   const initialQ = useSearchParams().get("q") ?? "";
   const { state, ask, reset } = useAskStream();
   const [localAnswers, setLocalAnswers] = useState<Answer[]>([]);
@@ -42,7 +36,7 @@ function useAskSession(conversationId: string | undefined, scope: string) {
   const asked = useRef("");
 
   const submit = async (question: string) => {
-    const answer = await ask(question, { conversationId: convId, scope: scope === ALL_SCOPES ? null : scope });
+    const answer = await ask(question, { conversationId: convId });
     if (!answer) return;
     setLocalAnswers((a) => [...a, answer]);
     reset();
@@ -88,9 +82,8 @@ export function AskScreen({ conversationId }: { conversationId?: string }) {
   const lookups = useLookups();
   const conv = useConversation(conversationId ?? "");
   const [draft, setDraft] = useState("");
-  const [scope, setScope] = useState(ALL_SCOPES);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const session = useAskSession(conversationId, scope);
+  const session = useAskSession(conversationId);
   useNewChatShortcut();
 
   const turns: Answer[] = [...(conv.data?.answers ?? []), ...session.localAnswers];
@@ -100,7 +93,7 @@ export function AskScreen({ conversationId }: { conversationId?: string }) {
   const send = (q: string) => { setDraft(""); return session.submit(q); };
   const composer = (large?: boolean) => (
     <AskComposer value={draft} onChange={setDraft} onSubmit={() => send(draft)} onStop={session.reset} busy={!!streaming}
-      scope={scope} onScopeChange={setScope} scopes={SCOPES} autoFocus={large} large={large}
+      autoFocus={large} large={large}
       placeholder={large ? "Ask about a procedure, a policy or a norm" : "Ask a follow-up, for example “and for the other site?”"} />
   );
 
@@ -175,6 +168,7 @@ function ChatHeader({ title, onOpenHistory }: { title: string | null; onOpenHist
 }
 
 function EmptyChat({ composer, onPick }: { composer: ReactNode; onPick: (q: string) => void }) {
+  const suggestions = demo?.suggestions ?? [];
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 pb-16">
       <div className="w-full max-w-[720px] animate-enter">
@@ -184,8 +178,8 @@ function EmptyChat({ composer, onPick }: { composer: ReactNode; onPick: (q: stri
           <p className="mt-1.5 text-body text-muted">Answers come only from your organization&apos;s documents, and every claim points to its page.</p>
         </div>
         <div className="mt-8">{composer}</div>
-        <ul className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Try asking">
-          {SUGGESTIONS.map((s, i) => (
+        {suggestions.length > 0 && <ul className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Try asking">
+          {suggestions.map((s, i) => (
             <li key={s} className="animate-enter" style={{ animationDelay: `${SUGGESTION_DELAY_MS + i * SUGGESTION_STAGGER_MS}ms` }}>
               <button type="button" onClick={() => onPick(s)}
                 className="rounded-full border border-border px-3.5 py-1.5 text-small text-muted transition-[border-color,color,transform] duration-[var(--dur-1)] ease-out hover:border-control hover:text-text active:scale-[0.97]">
@@ -193,7 +187,7 @@ function EmptyChat({ composer, onPick }: { composer: ReactNode; onPick: (q: stri
               </button>
             </li>
           ))}
-        </ul>
+        </ul>}
       </div>
     </div>
   );

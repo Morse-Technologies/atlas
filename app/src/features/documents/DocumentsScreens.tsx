@@ -4,15 +4,18 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, FileX } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
-import { useConversation, useDocument, useDocuments, usePeople, useRelated, useSources } from "@/features/hooks";
-import type { BandKind, DocStatus, Person } from "@/lib/api/types";
+import { useCanEditMetadata, useConversation, useDocument, useDocumentsPages, useIsAdmin, useOverview, usePeopleNames, useRelated, useSources } from "@/features/hooks";
+import type { BandKind, DocStatus, Document, PersonName } from "@/lib/api/types";
+import { demo } from "@/lib/demo";
 import { daysUntil } from "@/lib/format";
-import { CiteMark, Input, Select, Skeleton, bandLabel } from "@/ui/atoms";
-import { ErrorState, LoadingRows, PageHeader, Segmented, docLabel, revOf } from "@/ui/cells";
+import { CiteMark, Input, Select, Skeleton, bandLabel, buttonStyles } from "@/ui/atoms";
+import { ErrorState, LoadMore, LoadingRows, PageHeader, Segmented, docLabel, revOf } from "@/ui/cells";
 import {
   DetailSection, DocumentHeader, DocumentTable, Location, MetadataList, RelatedDocs, Revisions,
 } from "@/ui/organisms/Documents";
 import { Canvas } from "@/ui/templates/ShellLayout";
+import { DeleteDocument } from "./DeleteDocument";
+import { EditMetadata } from "./EditMetadata";
 
 const PdfViewer = dynamic(() => import("@/ui/organisms/PdfViewer"), {
   ssr: false,
@@ -20,9 +23,23 @@ const PdfViewer = dynamic(() => import("@/ui/organisms/PdfViewer"), {
 });
 
 const usePeopleMap = () => {
-  const { data } = usePeople();
-  return useMemo(() => new Map<string, Person>((data ?? []).map((p) => [p.id, p])), [data]);
+  const { data } = usePeopleNames();
+  return useMemo(() => new Map<string, PersonName>((data ?? []).map((p) => [p.id, p])), [data]);
 };
+
+/** For a format the viewer cannot show (spreadsheets): say so and offer the original. */
+function NoPreview({ doc }: { doc: Document }) {
+  return (
+    <div className="grid flex-1 place-items-center bg-raised p-8">
+      <div className="flex max-w-sm flex-col items-center text-center">
+        <FileX aria-hidden className="size-6 text-muted" />
+        <p className="mt-3 text-body font-medium">No preview for this format</p>
+        {demo && <p className="mt-1 text-body text-muted">{demo.previewNote}</p>}
+        {doc.originalUrl && <a href={doc.originalUrl} download className={`${buttonStyles({ variant: "outline" })} mt-4`}>Download the original</a>}
+      </div>
+    </div>
+  );
+}
 
 /* Documents list -------------------------------------------------------------------------------- */
 /** Languages the server reports; anything else (or "" before detection) is not shown. */
@@ -33,18 +50,19 @@ export function DocumentsScreen() {
   const [band, setBand] = useState<BandKind | "all">("all");
   const [status, setStatus] = useState<DocStatus | "all">("all");
   const query = useDeferredValue(q);
-  const all = useDocuments({});
-  const { data, isPending, isError, refetch } = useDocuments({ q: query, band, status });
+  const counts = useOverview().data?.documents;
+  const { data, isPending, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } = useDocumentsPages({ q: query, band, status });
   const people = usePeopleMap();
-  const total = all.data?.length ?? 0;
-  const countBand = (b: BandKind) => all.data?.filter((d) => d.band === b).length;
-  const overdue = all.data?.filter((d) => d.reviewDueAt && d.status === "current" && daysUntil(d.reviewDueAt) < 0).length ?? 0;
+  const sources = useSources(useIsAdmin());
+  const total = counts?.indexed ?? 0;
+  const countBand = (b: BandKind) => counts?.byBand[b];
+  const overdue = data?.filter((d) => d.reviewDueAt && d.status === "current" && daysUntil(d.reviewDueAt) < 0).length ?? 0;
 
   return (
     <Canvas>
       <PageHeader
         title="Documents"
-        subline={all.data ? `${total} indexed from 6 sources. ${overdue} current ${overdue === 1 ? "document is" : "documents are"} past their review date.` : "Everything Atlas has indexed, with where each value came from."}
+        subline={counts ? `${total} indexed${sources.data ? ` from ${sources.data.length} sources` : ""}. ${overdue} of the documents listed ${overdue === 1 ? "is" : "are"} past their review date.` : "Everything Atlas has indexed, with where each value came from."}
       />
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <div className="w-full sm:w-72">
@@ -70,11 +88,12 @@ export function DocumentsScreen() {
             <option value="unknown">Unknown</option>
           </Select>
         </div>
-        <span className="ml-auto text-small text-muted num" aria-live="polite">{data ? `${data.length} of ${total}` : ""}</span>
+        <span className="ml-auto text-small text-muted num" aria-live="polite">{data ? `${data.length} loaded` : ""}</span>
       </div>
       <div className="mt-5">
         {isPending ? <LoadingRows rows={8} pitch="h-14" /> : isError ? <ErrorState what="documents" onRetry={() => refetch()} />
           : <DocumentTable rows={data} people={people} total={total} />}
+        {data && <LoadMore loaded={data.length} hasMore={!!hasNextPage} loading={isFetchingNextPage} onLoadMore={() => void fetchNextPage()} />}
       </div>
     </Canvas>
   );
@@ -89,8 +108,9 @@ export function DocumentScreen({ id }: { id: string }) {
   const hl = params.get("hl")?.split(",").map(Number);
   const { data: doc, isPending, isError, refetch } = useDocument(id);
   const related = useRelated(id);
-  const { data: sources } = useSources();
+  const { data: sources } = useSources(useIsAdmin());
   const people = usePeopleMap();
+  const canEdit = useCanEditMetadata();
   const owner = doc?.ownerId ? people.get(doc.ownerId) ?? null : null;
 
   if (isError) return <Canvas><ErrorState what="this document" onRetry={() => refetch()} /></Canvas>;
@@ -111,24 +131,14 @@ export function DocumentScreen({ id }: { id: string }) {
               initialPage={page}
               highlight={hl && hl.length === 4 ? { page, x: hl[0], y: hl[1], w: hl[2], h: hl[3], label: `Source [${cite}]`, band: doc.band } : undefined}
             />
-          ) : (
-            <div className="grid flex-1 place-items-center bg-raised p-8">
-              <div className="max-w-sm text-center">
-                <FileX aria-hidden className="mx-auto size-6 text-muted" />
-                <p className="mt-3 text-body font-medium">No preview in this demo snapshot</p>
-                <p className="mt-1 text-body text-muted">
-                  The demo ships one synthetic PDF (PNT-014). In a real install this page shows {docLabel(doc)} at page {page}.
-                </p>
-              </div>
-            </div>
-          )}
+          ) : <NoPreview doc={doc} />}
       </section>
       <aside aria-label="Document details" className="border-border bg-ground lg:h-[calc((100dvh-66px)/var(--content-zoom))] lg:w-[360px] lg:flex-none lg:overflow-y-auto lg:border-l">
         {isPending ? <div className="p-5"><LoadingRows rows={6} pitch="h-9" /></div> : (
           <>
             <DocumentHeader doc={doc} owner={owner} backHref={from ? `/ask/${from}` : undefined} />
-            <DetailSection title="Metadata" aside={<span className="text-small text-muted">and where each value came from</span>}>
-              <MetadataList rows={doc.provenance} />
+            <DetailSection title="Metadata" aside={canEdit ? <EditMetadata doc={doc} /> : <span className="text-small text-muted">and where each value came from</span>}>
+              <MetadataList rows={doc.provenance} people={people} />
             </DetailSection>
             <DetailSection title={`Revisions (${doc.versions.length})`}><Revisions versions={doc.versions} current={doc.currentVersionId} /></DetailSection>
             <DetailSection title="Related">
@@ -137,7 +147,8 @@ export function DocumentScreen({ id }: { id: string }) {
             <DetailSection title="Location">
               <Location path={doc.path} source={sources?.find((s) => s.id === doc.sourceId)?.name ?? ""} />
             </DetailSection>
-            <p className="px-5 pb-6 text-small text-muted num">rev.{revOf(doc)}, {doc.versions.find((v) => v.id === doc.currentVersionId)?.pages} pages{LANGUAGE_NAMES[doc.language] ? `, ${LANGUAGE_NAMES[doc.language]}` : ""}</p>
+            <DeleteDocument doc={doc} />
+            <p className="px-5 pb-6 pt-4 text-small text-muted num">rev.{revOf(doc)}, {doc.versions.find((v) => v.id === doc.currentVersionId)?.pages} pages{LANGUAGE_NAMES[doc.language] ? `, ${LANGUAGE_NAMES[doc.language]}` : ""}</p>
           </>
         )}
       </aside>

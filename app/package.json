@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "gen:api": "openapi-typescript ../server/api/openapi.yaml -o src/lib/api/schema.d.ts",
+    "check:demo-leak": "bash scripts/check-demo-leak.sh",
     "e2e": "playwright test"
   },
   "dependencies": {

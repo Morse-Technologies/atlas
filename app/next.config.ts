@@ -14,6 +14,8 @@ const nextConfig: NextConfig = {
     ];
   },
   turbopack: {
+    // The real build gets no demo kit: its code, fixtures and demo account never reach the browser.
+    resolveAlias: process.env.NEXT_PUBLIC_ATLAS_API === "live" ? { "@/lib/demo": "./src/lib/demo/none.ts" } : {},
     rules: {
       "*.css": {
         loaders: ["@tailwindcss/turbopack"],

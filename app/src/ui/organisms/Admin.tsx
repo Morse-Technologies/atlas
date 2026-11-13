@@ -2,21 +2,15 @@
 import { Copy, Pencil } from "lucide-react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
-import type { AuditEvent, Document, Person, Role } from "@/lib/api/types";
+import type { AuditEvent, Document, Person, PersonName, Role } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { fmtAgo, fmtDate, fmtTime } from "@/lib/format";
+import { auditDetailText, labelOfAction, roleInfo, rolesToOffer } from "@/lib/labels";
 import { Avatar, Button, Checkbox, Mark, Pill } from "@/ui/atoms";
 import { EmptyState, WithDocChips } from "@/ui/cells";
 
 /* Audit log ------------------------------------------------------------------------------------- */
-const actionLabel: Record<string, string> = {
-  "answer.generated": "Answer generated", "answer.feedback": "Feedback", "metadata.corrected": "Metadata corrected",
-  "alert.raised": "Alert raised", "alert.dismissed": "Alert dismissed", "source.updated": "Source changed",
-  "source.synced": "Source synced", "source.sync_failed": "Sync failed", "document.quarantined": "Quarantined",
-  "user.login": "Signed in", "audit.exported": "Log exported",
-};
-
-export function AuditTable({ events, people, docs }: { events: AuditEvent[]; people: Map<string, Person>; docs: Document[] }) {
+export function AuditTable({ events, people, docs }: { events: AuditEvent[]; people: Map<string, PersonName>; docs: Document[] }) {
   if (!events.length) return <EmptyState>No events match this filter.</EmptyState>;
   return (
     <div className="overflow-x-auto">
@@ -41,11 +35,11 @@ export function AuditTable({ events, people, docs }: { events: AuditEvent[]; peo
                 <td className="py-3 text-right text-muted num">{e.id}</td>
                 <td className="py-3 pl-5"><span className="block num" suppressHydrationWarning>{fmtDate(e.at)}</span><span className="block text-small text-muted num" suppressHydrationWarning>{fmtTime(e.at)}</span></td>
                 <td className="py-3">
-                  {p ? <span className="inline-flex items-center gap-2"><Avatar name={p.name} hue={p.hue} size={20} /><span className="truncate">{p.name}</span></span>
+                  {p ? <span className="inline-flex items-center gap-2"><Avatar name={p.name} size={20} /><span className="truncate">{p.name}</span></span>
                     : <span className="inline-flex items-center gap-2 text-muted"><Mark className="size-5" />Atlas</span>}
                 </td>
-                <td className="py-3"><span className="block">{actionLabel[e.action] ?? e.action}</span><span className="block truncate text-small text-muted">{e.subject}</span></td>
-                <td className="py-3 pr-4"><span className="line-clamp-2"><WithDocChips text={e.detail} docs={docs} /></span></td>
+                <td className="py-3"><span className="block">{labelOfAction(e.action)}</span><span className="block truncate text-small text-muted">{e.subject}</span></td>
+                <td className="py-3 pr-4"><span className="line-clamp-2"><WithDocChips text={auditDetailText(e.detail)} docs={docs} /></span></td>
                 <td className="py-3">
                   <button type="button" onClick={() => { navigator.clipboard?.writeText(e.hash); toast("Hash copied"); }}
                     className="inline-flex items-center gap-1.5 rounded-control num text-small text-muted hover:text-text" aria-label={`Copy hash of event ${e.id}`}>
@@ -62,15 +56,6 @@ export function AuditTable({ events, people, docs }: { events: AuditEvent[]; peo
 }
 
 /* Users ------------------------------------------------------------------------------------------ */
-export const roleInfo: Record<Role, { label: string; help: string }> = {
-  viewer: { label: "Ask", help: "Asks questions and opens the documents they already have access to." },
-  editor_metadata: { label: "Edit metadata", help: "Corrects codes, owners and dates. Corrections survive re-indexing." },
-  curator: { label: "Curator", help: "Looks after the documentation: works through alerts, confirms or rejects suggested links and entities." },
-  organizer_approver: { label: "Approve reorganisation", help: "Signs folder reorganisation plans before anything moves." },
-  admin: { label: "Administrator", help: "Manages sources, people, models and the license." },
-  auditor: { label: "Auditor", help: "Reads and exports the audit log. Read-only everywhere else." },
-};
-
 export function UserTable({ people, onEdit }: { people: Person[]; onEdit: (p: Person) => void }) {
   return (
     <>
@@ -105,7 +90,7 @@ export function RoleEditor({ roles, onChange }: { roles: Role[]; onChange: (r: R
   return (
     <fieldset className="flex flex-col">
       <legend className="sr-only">Roles</legend>
-      {(Object.keys(roleInfo) as Role[]).map((r) => (
+      {rolesToOffer(roles).map((r) => (
         <div key={r} className="flex items-start gap-3 border-b border-rule px-5 py-3.5 last:border-0">
           <Checkbox id={`role-${r}`} checked={roles.includes(r)} aria-describedby={`role-${r}-help`}
             onCheckedChange={(v) => onChange(v ? [...roles, r] : roles.filter((x) => x !== r))} className="mt-0.5" />

@@ -2,15 +2,19 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { OTPField } from "@base-ui/react/otp-field";
-import { ApiError, DEMO_ACCOUNT, api, isDemoApi } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
+import { demo } from "@/lib/demo";
 import { safeNext } from "@/lib/auth";
-import { ArrowRight, Check, Copy, Eye, EyeOff, FolderOpen, LogIn, Upload } from "lucide-react";
+import { ArrowRight, Copy, Eye, EyeOff, LogIn } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { newKey } from "@/features/hooks";
 import { isEmail } from "@/lib/format";
 import { Button, Input, Spinner } from "@/ui/atoms";
 import { Field, Segmented, Steps } from "@/ui/cells";
+import { FolderPicker, folderName } from "@/features/sources/FolderPicker";
+import { UploadFiles } from "@/features/sources/UploadFiles";
+import { uploadOutcome } from "./setupFinish";
 import type { SetupInput } from "@/lib/api";
 import { AuthLayout } from "@/ui/templates/AuthLayout";
 
@@ -23,6 +27,7 @@ const Caption = <p>Every answer points to the page it came from: <span className
 export function LoginScreen() {
   const router = useRouter();
   const next = useSearchParams().get("next");
+  const account = demo?.account;
   const [step, setStep] = useState<"password" | "code">("password");
   const [challengeId, setChallengeId] = useState("");
   const [email, setEmail] = useState("");
@@ -107,14 +112,14 @@ export function LoginScreen() {
           </>
         )}
       </div>
-      {isDemoApi && step === "password" && (
-        <button type="button" onClick={() => { setEmail(DEMO_ACCOUNT.email); setPassword(DEMO_ACCOUNT.password); setError(null); }}
+      {account && step === "password" && (
+        <button type="button" onClick={() => { setEmail(account.email); setPassword(account.password); setError(null); }}
           className="mt-5 flex w-full items-center justify-between gap-3 rounded-card border border-dashed border-control px-3.5 py-2.5 text-left text-small text-muted transition-[border-color,color] duration-[var(--dur-1)] hover:border-accent hover:text-text">
-          <span>Demo: fill in the demo account <span className="text-text">{DEMO_ACCOUNT.email}</span></span>
+          <span>Demo: fill in the demo account <span className="text-text">{account.email}</span></span>
           <ArrowRight className="size-4 flex-none" />
         </button>
       )}
-      {isDemoApi && step === "code" && <p className="mt-5 rounded-card bg-raised px-3.5 py-2.5 text-small text-muted">Demo code: <span className="text-text num">{DEMO_ACCOUNT.code}</span></p>}
+      {account && step === "code" && <p className="mt-5 rounded-card bg-raised px-3.5 py-2.5 text-small text-muted">Demo code: <span className="text-text num">{account.code}</span></p>}
       <p className="mt-8 text-body text-muted">First time on this server? <Link href="/setup" className="text-text underline">Set up Atlas</Link></p>
     </AuthLayout>
   );
@@ -144,22 +149,24 @@ function CodeInput({ value, onChange, onComplete }: { value: string; onChange: (
 /* Setup wizard: administrator → second factor → first source ------------------------------------- */
 const STEPS = ["Account", "Sign-in", "Source"];
 const MIN_PASSWORD_LEN = 12;
-const FOLDER_PATH = /^(\\\\[^\\]+\\[^\\]+.*|\/.+)$/; // \\server\share\… or an absolute path
 
 type SetupForm = {
   account: SetupInput;
   kind: "folder" | "upload";
   folder: string;
+  files: File[];
   check: "idle" | "checking" | "ok" | "failed";
   checkDetail: string;
   totpUri: string;
 };
 type StepProps = { form: SetupForm; set: (patch: Partial<SetupForm>) => void };
 
-const EMPTY_FORM: SetupForm = { account: { orgName: "", name: "", email: "", password: "" }, kind: "folder", folder: "", check: "idle", checkDetail: "", totpUri: "" };
+const EMPTY_FORM: SetupForm = { account: { orgName: "", name: "", email: "", password: "" }, kind: "folder", folder: "", files: [], check: "idle", checkDetail: "", totpUri: "" };
 const accountOk = ({ orgName, name, email, password }: SetupInput) =>
   !!orgName.trim() && !!name.trim() && isEmail(email) && password.length >= MIN_PASSWORD_LEN;
-const folderName = (path: string) => path.trim().split(/[\\/]/).filter(Boolean).pop() ?? "Documents";
+
+/** The last step can finish once the folder was checked or at least one file was chosen. */
+const readyToFinish = (f: SetupForm) => (f.kind === "folder" ? f.check === "ok" : f.files.length > 0);
 
 /** True once an administrator exists: the wizard must not offer to create a second one. */
 function useSetupClosed() {
@@ -193,10 +200,19 @@ export function SetupScreen() {
     setStep(2);
   });
   const finish = () => run(async () => {
-    if (form.kind === "folder") await api.createSource({ name: folderName(form.folder), kind: "folder", location: form.folder.trim() });
-    toast.success("Atlas is indexing your first source", { description: "You can ask as soon as the first documents are in. Progress is on Sources." });
-    router.push("/sources");
+    if (form.kind === "upload") return finishUpload();
+    await api.createSource({ name: folderName(form.folder), kind: "folder", location: form.folder.trim() });
+    goToSources("Atlas is indexing your first source");
   });
+  const finishUpload = async () => {
+    const outcome = uploadOutcome(await api.uploadFiles(form.files, newKey()));
+    if (!outcome.ok) throw new ApiError(422, outcome.message); // shown as it is by setupMessage
+    goToSources(outcome.message);
+  };
+  const goToSources = (title: string) => {
+    toast.success(title, { description: "You can ask as soon as the first documents are in. Progress is on Sources." });
+    router.push("/sources");
+  };
 
   if (closed) return <AlreadySetUp />;
   return (
@@ -211,7 +227,7 @@ export function SetupScreen() {
       <div className="mt-8 flex items-center justify-between gap-3">
         {step === 0 ? <Link href="/login" className="text-body text-muted hover:text-text">I already have an account</Link> : <span />}
         {step === 0 && <Button variant="primary" size="lg" disabled={!accountOk(form.account) || busy} onClick={createAdmin}>{busy ? <Spinner className="text-on-primary" /> : null}Continue<ArrowRight /></Button>}
-        {step === 2 && <Button variant="primary" size="lg" disabled={busy || (form.kind === "folder" && form.check !== "ok")} onClick={finish}>{busy ? <Spinner className="text-on-primary" /> : null}Start indexing</Button>}
+        {step === 2 && <Button variant="primary" size="lg" disabled={busy || !readyToFinish(form)} onClick={finish}>{busy ? <Spinner className="text-on-primary" /> : null}Start indexing</Button>}
       </div>
     </AuthLayout>
   );
@@ -250,7 +266,7 @@ function AccountStep({ form: { account }, set }: StepProps) {
   const short = account.password && account.password.length < MIN_PASSWORD_LEN;
   return (
     <>
-      <StepTitle title="Create the administrator account">You can connect company sign-in later in Settings.</StepTitle>
+      <StepTitle title="Create the administrator account">This account manages people, sources and settings.</StepTitle>
       <div className="mt-6 flex flex-col gap-4">
         <Field label="Organization">{({ id }) => <Input id={id} value={account.orgName} onChange={(e) => edit({ orgName: e.target.value })} autoComplete="organization" />}</Field>
         <Field label="Full name">{({ id }) => <Input id={id} value={account.name} onChange={(e) => edit({ name: e.target.value })} autoComplete="name" />}</Field>
@@ -293,41 +309,7 @@ function SourceStep({ form, set }: StepProps) {
       <StepTitle title="Where are your documents?">Atlas reads them where they are and never moves or changes them.</StepTitle>
       <Segmented className="mt-6" label="Source kind" value={form.kind} onChange={(kind) => set({ kind, check: "idle" })}
         options={[{ value: "folder", label: "Network folder" }, { value: "upload", label: "Upload files" }]} />
-      {form.kind === "folder" ? <FolderPicker form={form} set={set} /> : (
-        <div className="mt-5 flex min-h-32 flex-col items-center justify-center gap-2 rounded-card border border-dashed border-control p-6 text-center">
-          <Upload aria-hidden className="size-5 text-muted" />
-          <p className="text-body">Drop PDFs, Word or Excel files here after setup, from the Assistant or Sources.</p>
-        </div>
-      )}
+      {form.kind === "folder" ? <FolderPicker folder={form.folder} check={form.check} checkDetail={form.checkDetail} onChange={set} /> : <UploadFiles files={form.files} onChange={(files) => set({ files })} />}
     </>
-  );
-}
-
-function FolderPicker({ form: { folder, check, checkDetail }, set }: StepProps) {
-  const folderOk = FOLDER_PATH.test(folder.trim());
-  const runCheck = async () => {
-    set({ check: "checking" });
-    try {
-      const result = await api.checkFolder(folder.trim());
-      set({ check: result.ok ? "ok" : "failed", checkDetail: result.detail });
-    } catch {
-      set({ check: "failed", checkDetail: "Atlas couldn't check this folder. Try again." });
-    }
-  };
-  return (
-    <div className="mt-5 flex flex-col gap-3">
-      <Field label="Folder path" help="A folder Atlas may read, for example /sources/docs." error={folder && !folderOk ? "Use \\\\server\\share or an absolute path." : undefined}>
-        {({ id, describedBy, invalid }) => (
-          <div className="flex gap-2">
-            <Input id={id} value={folder} onChange={(e) => set({ folder: e.target.value, check: "idle" })} placeholder="/sources/docs" aria-describedby={describedBy} aria-invalid={invalid} />
-            <Button variant="outline" size="lg" disabled={!folderOk || check === "checking"} onClick={runCheck}>
-              {check === "checking" ? <Spinner /> : <FolderOpen />}Check
-            </Button>
-          </div>
-        )}
-      </Field>
-      {check === "ok" && <p role="status" className="flex items-center gap-2 text-body text-positive animate-enter"><Check className="size-4" />Atlas can read this folder with a read-only account.</p>}
-      {check === "failed" && <p role="alert" className="text-body text-negative animate-enter">{checkDetail}</p>}
-    </div>
   );
 }

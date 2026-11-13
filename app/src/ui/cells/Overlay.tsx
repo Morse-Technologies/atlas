@@ -66,9 +66,15 @@ function usePredictiveBack(open: boolean, close: () => void) {
     window.addEventListener("popstate", onPop);
     return () => {
       window.removeEventListener("popstate", onPop);
-      if (history.state?.atlasOverlay) history.back();
+      if (history.state?.atlasOverlay) leaveOverlayEntry();
     };
   }, [open]);
+}
+
+/** Closing our own entry is not a Back gesture: an overlay that opens in the same moment (one sheet handing over to the next) must not close with it. */
+function leaveOverlayEntry() {
+  window.addEventListener("popstate", (e) => e.stopImmediatePropagation(), { once: true, capture: true });
+  history.back();
 }
 
 /** A centred dialog that scales from 96 %. */

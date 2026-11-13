@@ -4,7 +4,7 @@ import { ArrowUp, BookOpen, Check, ChevronDown, Copy, RotateCcw, Square, ThumbsD
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { gsap } from "gsap";
 import { reduced } from "@/lib/motion";
-import type { Answer, BandKind, Citation, ConversationSummary, Document, Person } from "@/lib/api/types";
+import type { Answer, BandKind, Citation, ConversationSummary, Document, PersonName } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { clockNow } from "@/lib/clock";
 import { fmtSeconds } from "@/lib/format";
@@ -18,10 +18,10 @@ const viewerHref = (c: Citation, conversationId?: string) =>
 
 /* Composer: a floating rounded field, like a messaging app ----------------------------------------- */
 export function AskComposer({
-  value, onChange, onSubmit, onStop, busy, scope, onScopeChange, scopes, autoFocus, large, placeholder = "Ask about a procedure, a policy or a norm",
+  value, onChange, onSubmit, onStop, busy, autoFocus, large, placeholder = "Ask about a procedure, a policy or a norm",
 }: {
   value: string; onChange: (v: string) => void; onSubmit: () => void; onStop?: () => void; busy?: boolean;
-  scope: string; onScopeChange: (s: string) => void; scopes: string[]; autoFocus?: boolean; large?: boolean; placeholder?: string;
+  autoFocus?: boolean; large?: boolean; placeholder?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -43,15 +43,7 @@ export function AskComposer({
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
         className={cn("block w-full resize-none bg-transparent px-5 text-text caret-accent outline-none placeholder:text-faint", large ? "pt-4 text-section leading-7" : "pt-3.5 text-section")}
       />
-      <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
-        <label className="relative inline-flex">
-          <span className="sr-only">Limit to</span>
-          <select value={scope} onChange={(e) => onScopeChange(e.target.value)}
-            className="hit-slop h-8 appearance-none rounded-full border border-border bg-surface pr-7 pl-3 text-small text-muted transition-colors hover:border-control hover:text-text">
-            {scopes.map((s) => <option key={s} value={s}>{s === "all" ? "All lines" : s}</option>)}
-          </select>
-          <ChevronDown aria-hidden className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted" />
-        </label>
+      <div className="flex items-center justify-end gap-3 px-2.5 pb-2.5">
         <div className="flex items-center gap-2 text-small text-muted">
           <span className="hidden items-center gap-1 sm:inline-flex"><Kbd>↵</Kbd> send <span aria-hidden className="mx-1 h-3 w-px bg-border" /><Kbd>⇧</Kbd><Kbd>↵</Kbd> new line</span>
           {busy && onStop ? (
@@ -152,7 +144,7 @@ function IconAction({ label, onClick, children, pressed }: { label: string; onCl
 export function AssistantMessage({
   answer, streamText, citations, notes, docs, people, active, onHover, onFeedback, onRetry, conversationId,
 }: {
-  answer?: Answer; streamText?: string; citations: Citation[]; notes: string[]; docs: Map<string, Document>; people: Map<string, Person>;
+  answer?: Answer; streamText?: string; citations: Citation[]; notes: string[]; docs: Map<string, Document>; people: Map<string, PersonName>;
   active: number | null; onHover: (n: number | null) => void; onFeedback?: (v: "up" | "down") => void; onRetry?: () => void; conversationId?: string;
 }) {
   const streaming = streamText !== undefined;

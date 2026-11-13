@@ -7,7 +7,7 @@ import { flushSync } from "react-dom";
 import { useIsFetching } from "@tanstack/react-query";
 import { Moon, PanelLeft, SquarePen, Sun } from "lucide-react";
 import { ViewTransition, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { useAlerts, useDocuments, useFeature, useMe, usePrefetchScreen, useSettings } from "@/features/hooks";
+import { useAlerts, useCanOpenScreen, useDocuments, useFeature, useMe, usePrefetchScreen } from "@/features/hooks";
 import { Kbd, Pill, Spinner } from "@/ui/atoms";
 import { isDemoApi, type Alert, type Document } from "@/lib/api";
 import { useMod } from "@/lib/platform";
@@ -113,7 +113,7 @@ function useSidebar() {
 }
 
 /** ⌘K palette, ⌘\\ sidebar, and "G then a letter" jumps (ignored while typing). */
-function useShellShortcuts({ onPalette, onToggleNav }: { onPalette: () => void; onToggleNav: () => void }) {
+function useShellShortcuts({ onPalette, onToggleNav, canOpen }: { onPalette: () => void; onToggleNav: () => void; canOpen: (href: string) => boolean }) {
   const router = useRouter();
   const pendingG = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -125,18 +125,19 @@ function useShellShortcuts({ onPalette, onToggleNav }: { onPalette: () => void; 
       if (pendingG.current) {
         clearTimeout(pendingG.current); pendingG.current = null;
         const to = JUMPS[e.key.toLowerCase()];
-        if (to) { e.preventDefault(); router.push(to); }
+        if (to && canOpen(to)) { e.preventDefault(); router.push(to); }
         return;
       }
       if (e.key.toLowerCase() === "g") pendingG.current = setTimeout(() => { pendingG.current = null; }, G_CHORD_MS);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onPalette, onToggleNav, router]);
+  }, [onPalette, onToggleNav, canOpen, router]);
 }
 
 /** Sidebar groups for this edition and license: Pro screens are hidden in Core, locked without a license. */
 function useNavGroups() {
+  const canOpen = useCanOpenScreen();
   const { data: alerts } = useAlerts();
   const alertsPro = useFeature("alerts");
   const mapPro = useFeature("map");
@@ -156,7 +157,7 @@ function useNavGroups() {
       { href: "/audit", label: "Audit", icon: ShieldCheck },
       { href: "/users", label: "Users", icon: Users },
     ],
-  ].map((g) => g.filter((n) => hasScreen(n.href))).filter((g) => g.length), [openCount, alertsPro.enabled, alertsPro.isPending, mapPro.enabled, mapPro.isPending]);
+  ].map((g) => g.filter((n) => hasScreen(n.href) && canOpen(n.href))).filter((g) => g.length), [canOpen, openCount, alertsPro.enabled, alertsPro.isPending, mapPro.enabled, mapPro.isPending]);
 }
 
 type PaletteSource = { query: string; screens: NavItem[]; nav: ReturnType<typeof useSidebar>; theme: ReturnType<typeof useTheme> };
@@ -190,7 +191,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { data: me } = useMe();
-  const orgName = useSettings().data?.orgName ?? "";
+  useEffect(() => { if (me?.mustChangePassword) router.replace("/password"); }, [me?.mustChangePassword, router]);
+  const orgName = me?.orgName ?? "";
   const { data: alerts } = useAlerts();
   const alertsPro = useFeature("alerts");
   const themeState = useTheme();
@@ -204,11 +206,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const fetching = useIsFetching();
   const account = useAccountMenu();
   const togglePalette = useCallback(() => setPalette((o) => !o), []);
-  useShellShortcuts({ onPalette: togglePalette, onToggleNav: nav.toggle });
+  const canOpen = useCanOpenScreen();
+  useShellShortcuts({ onPalette: togglePalette, onToggleNav: nav.toggle, canOpen });
 
   const groups = useNavGroups();
-  const footer: NavItem[] = [{ href: "/settings", label: "Settings", icon: Settings }];
-  const all = useMemo(() => [...groups.flat(), ...footer], [groups]); // eslint-disable-line react-hooks/exhaustive-deps
+  const footer = useMemo<NavItem[]>(() => (canOpen("/settings") ? [{ href: "/settings", label: "Settings", icon: Settings }] : []), [canOpen]);
+  const all = useMemo(() => [...groups.flat(), ...footer], [groups, footer]);
   const paletteItems = usePaletteItems({ query, screens: all, nav, theme: themeState });
 
   const section = titles[pathname.split("/")[1] ?? ""] ?? "";

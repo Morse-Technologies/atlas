@@ -3,13 +3,19 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { newKey, undoable, useLicense, useSettings, useUpdateSettings } from "@/features/hooks";
-import { isDemoApi, setPreviewPlan } from "@/lib/api";
-import type { SettingsPatch } from "@/lib/api/types";
+import { demo } from "@/lib/demo";
+import type { ProFeature, Settings, SettingsPatch } from "@/lib/api/types";
 import { fmtDate } from "@/lib/format";
-import { Button, Input, Pill, Select, Switch } from "@/ui/atoms";
+import { Button, Input, Pill, Select, Switch, type Tone } from "@/ui/atoms";
 import { ErrorState, Field, KeyValues, LoadingRows, PageHeader, Segmented } from "@/ui/cells";
 import { SettingsSection, SwitchRow, fmtWhen } from "@/ui/organisms/Admin";
 import { Canvas } from "@/ui/templates/ShellLayout";
+import { LicenseInstall } from "./LicenseInstall";
+
+// Only what this version of Atlas delivers: a license may name more, and those are not offered as available.
+const featureLabel: Partial<Record<ProFeature, string>> = { alerts: "Alerts", map: "Map", audit_reports: "Signed audit reports" };
+
+const availableFeatures = (features: ProFeature[]) => features.flatMap((f) => featureLabel[f] ?? []);
 
 /* Screen 10: Settings ------------------------------------------------------------------------------ */
 export function SettingsScreen() {
@@ -27,7 +33,7 @@ export function SettingsScreen() {
       undo: prev ? () => update.mutateAsync({ patch: prev, key: newKey() }) : undefined,
     }).catch(() => {});
   };
-  const preview = (plan: "core" | "pro") => { setPreviewPlan(plan); qc.invalidateQueries({ queryKey: ["license"] }); toast(plan === "core" ? "Previewing Atlas Core" : "Back to Atlas Pro"); };
+  const preview = (plan: "core" | "pro") => { demo?.setPreviewPlan(plan); qc.invalidateQueries({ queryKey: ["license"] }); toast(plan === "core" ? "Previewing Atlas Core" : "Back to Atlas Pro"); };
 
   if (isError) return <Canvas><ErrorState what="settings" onRetry={() => refetch()} /></Canvas>;
   return (
@@ -65,15 +71,22 @@ export function SettingsScreen() {
               <Segmented className="max-w-full self-start overflow-x-auto" label="Answer in" value={s.answerLanguage} onChange={(v) => save({ answerLanguage: v }, "Answer language")}
                 options={[{ value: "user", label: "Same as the question" }, { value: "es", label: "Spanish" }, { value: "en", label: "English" }]} />
             </div>
+            <div className="flex flex-col gap-2">
+              <span className="text-body font-medium">Word search language</span>
+              <Segmented className="max-w-full self-start overflow-x-auto" label="Word search language" value={s.searchLanguage} onChange={(v) => save({ searchLanguage: v }, "Word search language")}
+                options={[{ value: "none", label: "Any (accents ignored)" }, { value: "es", label: "Spanish" }, { value: "en", label: "English" }]} />
+              <p className="text-small text-muted">Words are found without caring about accents. Choose a language to also find plurals and other forms (husillo, husillos).</p>
+            </div>
           </SettingsSection>
 
           <SettingsSection title="Models and network" description="Everything runs on this server. Change models in the deployment, then check the evaluation report.">
-            <KeyValues rows={[{ k: "Answers", v: s.chatModel }, { k: "Search", v: s.embedModel }, { k: "Reranking", v: s.rerankModel }]} />
+            <KeyValues rows={[{ k: "Answers", v: s.chatModel }, { k: "Search", v: s.embedModel }, { k: "Reranking", v: s.rerankModel },
+              { k: "Answer mode", v: <AnswerMode mode={s.answerMode} gaps={s.answerGaps} /> }]} />
             <SwitchRow title="Network isolated" description="Atlas makes no outbound connections: no telemetry, no license checks, no model downloads. Set in the deployment."
               control={<Pill tone={s.networkIsolated ? "positive" : "neutral"}>{s.networkIsolated ? "On" : "Off"}</Pill>} />
           </SettingsSection>
 
-          <SettingsSection title="Retention" description="How long questions, answers and audit events are kept. Documents stay as long as they exist in their source.">
+          <SettingsSection title="Retention" description="How long questions and answers are kept. The audit log is kept in full.">
             <Field label="Keep records for">
               {({ id }) => (
                 <Select id={id} value={s.retentionDays} onChange={(e) => save({ retentionDays: Number(e.target.value) }, "Retention")} className="h-10 bg-surface">
@@ -90,8 +103,10 @@ export function SettingsScreen() {
                   { k: "Plan", v: license.plan === "pro" ? "Atlas Pro" : "Atlas Core (open source)" },
                   { k: "Organization", v: license.organization },
                   { k: "Valid until", v: license.plan === "pro" ? fmtDate(license.validUntil) : "n/a" },
+                  { k: "Features", v: availableFeatures(license.features).join(", ") || "None" },
                 ]} />
-                {isDemoApi && (
+                <LicenseInstall />
+                {demo && (
                   <div className="rounded-card border border-dashed border-control p-3">
                     <SwitchRow title="Preview as Atlas Core" badge={<Pill>Demo only</Pill>} description="Shows how the app looks without a Pro license. Resets on reload."
                       control={<Switch aria-label="Preview as Atlas Core" checked={license.plan === "core"} onCheckedChange={(v) => preview(v ? "core" : "pro")} />} />
@@ -104,5 +119,20 @@ export function SettingsScreen() {
         </div>
       )}
     </Canvas>
+  );
+}
+
+const answerModeLabel: Record<Settings["answerMode"], [Tone, string]> = {
+  generated: ["positive", "Written answers"], passages: ["warning", "Passages only"], keyword: ["warning", "Word search only"],
+};
+
+/** What a question gets with the models installed, and what is missing for something better. */
+function AnswerMode({ mode, gaps }: { mode: Settings["answerMode"]; gaps: string[] }) {
+  const [tone, label] = answerModeLabel[mode];
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <Pill tone={tone}>{label}</Pill>
+      {gaps.length > 0 && <ul className="list-disc pl-5 text-small text-muted">{gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
+    </div>
   );
 }

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { isDemoApi } from "@/lib/api";
+import { demo } from "@/lib/demo";
 import { Halftone, Mark } from "@/ui/atoms";
 
 /** Sign-in and setup: the form on the left, a piece of the real product on the right (hidden on phones). */
@@ -11,7 +11,7 @@ export function AuthLayout({ children, aside }: { children: ReactNode; aside?: R
         <div className="flex items-center gap-2 text-text">
           <Mark className="size-7" />
           <span className="text-section font-medium">Atlas</span>
-          {isDemoApi && <span className="text-body text-muted">Planta Norte</span>}
+          {demo && <span className="text-body text-muted">{demo.brand}</span>}
         </div>
         <div className="flex flex-1 flex-col items-center justify-center py-10">
           <div className="w-full max-w-[440px]">{children}</div>

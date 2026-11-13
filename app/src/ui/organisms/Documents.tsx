@@ -7,9 +7,10 @@ import { ArrowDown, ArrowUp, Copy, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { ViewTransition, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import type { Document, DocumentVersion, FieldProvenance, GraphEdge, Person } from "@/lib/api/types";
+import type { Document, DocumentVersion, FieldProvenance, GraphEdge, PersonName } from "@/lib/api/types";
 import { daysUntil, fmtAgo, fmtDate } from "@/lib/format";
-import { Avatar, Band, Pill } from "@/ui/atoms";
+import { labelOfField, metadataValue } from "@/lib/labels";
+import { Avatar, Band, Pill, type Tone } from "@/ui/atoms";
 import { DocBandLink, DocChip, DocFurniture, DocStatusPill, EmptyState, ProvenanceTag, docLabel, revOf } from "@/ui/cells";
 
 /* Table ------------------------------------------------------------------------------------- */
@@ -28,7 +29,7 @@ function ReviewDue({ iso }: { iso: string | null }) {
     : <span>{fmtDate(iso)}</span>;
 }
 
-export function DocumentTable({ rows, people, total }: { rows: Document[]; people: Map<string, Person>; total: number }) {
+export function DocumentTable({ rows, people, total }: { rows: Document[]; people: Map<string, PersonName>; total: number }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const columns = useMemo(() => col.columns([
     col.accessor((d) => `${d.code} ${d.title}`, {
@@ -45,7 +46,7 @@ export function DocumentTable({ rows, people, total }: { rows: Document[]; peopl
       id: "owner", header: "Owner",
       cell: ({ row: { original: d } }) => {
         const p = d.ownerId ? people.get(d.ownerId) : null;
-        return p ? <span className="inline-flex items-center gap-2"><Avatar name={p.name} hue={p.hue} size={20} /><span className="truncate">{p.name}</span></span>
+        return p ? <span className="inline-flex items-center gap-2"><Avatar name={p.name} size={20} /><span className="truncate">{p.name}</span></span>
           : <span className="text-[var(--pill-warning-ink)]">No owner</span>;
       },
     }),
@@ -124,7 +125,7 @@ function Section({ title, children, aside }: { title: string; children: ReactNod
   );
 }
 
-export function DocumentHeader({ doc, owner, backHref }: { doc: Document; owner: Person | null; backHref?: string }) {
+export function DocumentHeader({ doc, owner, backHref }: { doc: Document; owner: PersonName | null; backHref?: string }) {
   const band = (
     <ViewTransition name={`doc-${doc.id}`} share="morph" default="none">
       <Band kind={doc.band} arrow={!!backHref} size="lg">{docLabel(doc)} rev.{revOf(doc)}</Band>
@@ -146,20 +147,30 @@ export function DocumentHeader({ doc, owner, backHref }: { doc: Document; owner:
   );
 }
 
-export function MetadataList({ rows }: { rows: FieldProvenance[] }) {
+export function MetadataList({ rows, people }: { rows: FieldProvenance[]; people: Map<string, PersonName> }) {
   return (
     <dl className="flex flex-col">
       {rows.map((r) => (
         <div key={r.field} className="grid grid-cols-[96px_1fr] gap-3 py-1.5 text-body">
-          <dt className="text-muted">{r.field}</dt>
+          <dt className="text-muted">{labelOfField(r.field)}</dt>
           <dd className="min-w-0">
-            <span className="block">{r.value}</span>
+            <span className="block">{metadataValue(r, people)}</span>
             <ProvenanceTag source={r.source} confidence={r.confidence} />
           </dd>
         </div>
       ))}
     </dl>
   );
+}
+
+const unfinished: Partial<Record<DocumentVersion["state"], [Tone, string]>> = {
+  processing: ["neutral", "Processing"], retrying: ["warning", "Retrying"], quarantined: ["negative", "Quarantined"],
+};
+
+function RevisionPill({ version, current }: { version: DocumentVersion; current: string }) {
+  const stuck = unfinished[version.state];
+  if (stuck) return <Pill tone={stuck[0]}>{stuck[1]}</Pill>;
+  return version.id === current ? <Pill tone="positive">Current</Pill> : <Pill>Superseded</Pill>;
 }
 
 export function Revisions({ versions, current }: { versions: DocumentVersion[]; current: string }) {
@@ -169,7 +180,7 @@ export function Revisions({ versions, current }: { versions: DocumentVersion[]; 
         <li key={v.id} className="flex items-center justify-between gap-3 border-b border-rule py-2 text-body last:border-0">
           <span className="font-medium num">rev. {v.revision}</span>
           <span className="flex-1 text-small text-muted" suppressHydrationWarning>indexed {fmtAgo(v.indexedAt)}</span>
-          {v.id === current ? <Pill tone="positive">Current</Pill> : <Pill>Superseded</Pill>}
+          <RevisionPill version={v} current={current} />
         </li>
       ))}
     </ol>

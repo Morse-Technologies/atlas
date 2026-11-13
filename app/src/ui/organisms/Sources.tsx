@@ -1,19 +1,23 @@
 "use client";
-import { Pause, Play, RefreshCw, TriangleAlert } from "lucide-react";
+import { Pause, Play, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
 import type { BandKind, IngestionRun, QuarantineItem, Source } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { fmtAgo, fmtNum } from "@/lib/format";
+import { quarantineAdvice } from "@/lib/labels";
 import { HoldButton, Pill, type Tone } from "@/ui/atoms";
 import { EmptyState, SourceStatus } from "@/ui/cells";
+
+/** What removing a source does, said where the action is. */
+export const REMOVE_NOTE = "Atlas stops reading this folder and forgets its documents. The folder itself is not touched.";
 
 const kindLabel: Record<Source["kind"], string> = { folder: "Network folder", sharepoint: "SharePoint", erp_sql: "ERP database", upload: "Uploads" };
 
 /** One row per source: what it is, its state, how much it holds, when it last synced, and what you can do. A failure gets its own line. */
 export function SourceFlow({
-  sources, docCounts, bands, onSync, onPause, busyId, proEnabled,
+  sources, docCounts, bands, onSync, onPause, onRemove, busyId, proEnabled,
 }: {
   sources: Source[]; docCounts: Record<string, number>; bands: Record<string, BandKind>;
-  onSync: (id: string) => void; onPause: (id: string, paused: boolean) => void; busyId?: string | null; proEnabled: boolean;
+  onSync: (id: string) => void; onPause: (id: string, paused: boolean) => void; onRemove: (id: string) => void; busyId?: string | null; proEnabled: boolean;
 }) {
   return (
     <div className="relative overflow-x-auto" tabIndex={0} role="region" aria-label="Connected sources">
@@ -58,6 +62,15 @@ export function SourceFlow({
                       aria-label={s.status === "paused" ? `Resume ${s.name}` : `Pause ${s.name}`}>
                       {s.status === "paused" ? <Play /> : <Pause />}
                     </HoldButton>
+                    {s.kind !== "upload" && (
+                      <>
+                        <HoldButton size="icon" variant="ghost" holdMs={900} after doneLabel="Removed" onConfirm={() => onRemove(s.id)} aria-label={`Remove source ${s.name}`}
+                          aria-describedby={`remove-${s.id}`} title={REMOVE_NOTE}>
+                          <Trash2 />
+                        </HoldButton>
+                        <span id={`remove-${s.id}`} className="sr-only">{REMOVE_NOTE}</span>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -105,7 +118,7 @@ export function RunsTable({ runs, names }: { runs: IngestionRun[]; names: Record
             return (
               <tr key={r.id} className="border-b border-rule">
                 <td className="h-11 pr-3">{names[r.sourceId]}</td>
-                <td className="h-11 text-muted" suppressHydrationWarning>{fmtAgo(r.finishedAt)}</td>
+                <td className="h-11 text-muted" aria-live="polite" suppressHydrationWarning>{r.finishedAt ? fmtAgo(r.finishedAt) : "Running…"}</td>
                 <td className="h-11 pl-3 text-right num">{r.discovered}</td>
                 <td className="h-11 pl-3 text-right num">{r.indexed}</td>
                 <td className="h-11 pl-3 text-right text-muted num">{r.skipped}</td>
@@ -129,6 +142,7 @@ export function RunsTable({ runs, names }: { runs: IngestionRun[]; names: Record
 
 const reason: Record<QuarantineItem["reason"], [Tone, string]> = {
   encrypted: ["warning", "Encrypted"], corrupt: ["negative", "Corrupt"], unsupported: ["neutral", "Unsupported format"], too_large: ["neutral", "Too large"], hostile: ["negative", "Unsafe file"],
+  retries_exhausted: ["warning", "Failed after several tries"],
 };
 
 export function QuarantineList({ items, names, onRetry, retrying }: {
@@ -144,7 +158,7 @@ export function QuarantineList({ items, names, onRetry, retrying }: {
               <span className="truncate text-body font-medium">{q.path.split("/").pop()}</span>
               <Pill tone={reason[q.reason][0]}>{reason[q.reason][1]}</Pill>
             </div>
-            <p className="mt-0.5 text-body">{q.detail}</p>
+            <p className="mt-0.5 text-body">{quarantineAdvice[q.reason]}</p>
             <p className="mt-0.5 truncate text-small text-muted" suppressHydrationWarning>{names[q.sourceId]}, {q.path}, {fmtAgo(q.at)}</p>
           </div>
           <HoldButton size="sm" variant="outline" holdMs={500} doneLabel="Queued" onConfirm={() => onRetry(q.id)} disabled={retrying === q.id}>
