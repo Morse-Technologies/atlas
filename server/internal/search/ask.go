@@ -45,6 +45,8 @@ type turn struct {
 	hash    string
 	cited   []int
 	options access.Settings // the organization's choices when the question was asked
+	// rewritten is what was searched for when the question was a follow-up that got rewritten; "" otherwise.
+	rewritten string
 }
 
 // Ask answers a question, writing the answer to sink as it is produced. It returns an error only when the
@@ -60,7 +62,7 @@ func (s *Service) Ask(ctx context.Context, q Question, sink Sink) error {
 }
 
 func (s *Service) run(ctx context.Context, t *turn, sink Sink) {
-	ret, err := s.retrieve(ctx, t.who, t.q.Text)
+	ret, err := s.retrieve(ctx, t.who, s.standalone(ctx, t))
 	if err != nil {
 		slog.ErrorContext(ctx, "search failed", "error", err)
 		t.outcome = OutcomeError
@@ -95,7 +97,7 @@ func (s *Service) notFound(t *turn) {
 
 // answer sends the sources first, then either writes the answer or, if it cannot, lists the passages.
 func (s *Service) answer(ctx context.Context, t *turn, sink Sink) {
-	t.sent = t.ret.Candidates[:min(len(t.ret.Candidates), contextPassages)]
+	t.sent = passagesForModel(t.ret)
 	t.notes = append(t.notes, t.ret.Notes...)
 	if err := sink.Meta(Meta{AnswerID: t.id, Citations: citationsOf(t.sent, numbers(len(t.sent))), Notes: t.notes}); err != nil {
 		t.interrupt("")
@@ -106,6 +108,11 @@ func (s *Service) answer(ctx context.Context, t *turn, sink Sink) {
 		return
 	}
 	s.generate(ctx, t, sink)
+}
+
+// passagesForModel are the best passages of a search: the ones an answer is written from.
+func passagesForModel(ret retrieval) []candidate {
+	return ret.Candidates[:min(len(ret.Candidates), contextPassages)]
 }
 
 // searchMode lists the passages when no answer can be written: no model, or no reliable ranking.

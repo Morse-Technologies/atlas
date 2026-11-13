@@ -95,6 +95,9 @@ func lexicalQuery(question string, common map[string]bool) string {
 }
 
 // dropCommon leaves out the words found in many passages, unless nothing else is left to search for.
+// shortcut: the common words are the index's lexemes, so with a language that stems (migration 0024) a stemmed
+// word is not recognised and stays in the query: slower on a very large corpus, never wrong. Upgrade by stemming
+// the question's words in the database before comparing, if perf.sh shows it.
 func dropCommon(terms []string, common map[string]bool) []string {
 	var rare []string
 	for _, t := range terms {

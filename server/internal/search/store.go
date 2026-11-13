@@ -105,7 +105,8 @@ func (s *Service) insertAnswer(ctx context.Context, q *searchdb.Queries, in stor
 	err := q.InsertAnswer(ctx, searchdb.InsertAnswerParams{ID: a.ID, ConversationID: a.ConversationID, UserID: a.AskedByID,
 		Question: a.Question, AskedAt: a.AskedAt, Outcome: string(a.Outcome), Text: a.Text, Notes: notNil(a.Notes), Nearby: notNilIDs(a.Nearby),
 		LatencyMs: int32(a.LatencyMs), Model: a.Model, Scope: a.Scope, PromptVersion: promptVersionOf(t), EmbedModel: s.EmbedModel,
-		RerankModel: s.RerankModel, NotFoundThreshold: float32(t.options.NotFoundThreshold), ContextHash: t.hash})
+		RerankModel: s.RerankModel, NotFoundThreshold: float32(t.options.NotFoundThreshold), ContextHash: t.hash,
+		RewrittenQuestion: textOrNil(t.rewritten)})
 	if err != nil {
 		return fmt.Errorf("insert answer: %w", err)
 	}
@@ -116,6 +117,13 @@ func (s *Service) insertAnswer(ctx context.Context, q *searchdb.Queries, in stor
 		return fmt.Errorf("insert candidates: %w", err)
 	}
 	return nil
+}
+
+func textOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func promptVersionOf(t *turn) string {

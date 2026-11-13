@@ -68,6 +68,33 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 	return id, err
 }
 
+const deleteAnswersBefore = `-- name: DeleteAnswersBefore :execrows
+DELETE FROM search.answers WHERE asked_at < $1
+`
+
+// Citations and candidates go with the answer (ON DELETE CASCADE).
+func (q *Queries) DeleteAnswersBefore(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAnswersBefore, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteEmptyConversationsBefore = `-- name: DeleteEmptyConversationsBefore :execrows
+DELETE FROM search.conversations c
+WHERE c.updated_at < $1 AND NOT EXISTS (SELECT 1 FROM search.answers a WHERE a.conversation_id = c.id)
+`
+
+// A conversation just opened has no answer yet, so only the ones untouched since the cut-off count.
+func (q *Queries) DeleteEmptyConversationsBefore(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEmptyConversationsBefore, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const eraseUserConversations = `-- name: EraseUserConversations :execrows
 DELETE FROM search.conversations WHERE user_id = $1
 `
@@ -133,6 +160,23 @@ func (q *Queries) GetCandidateChunks(ctx context.Context, ids []uuid.UUID) ([]Ge
 	return items, nil
 }
 
+const getLastQuestion = `-- name: GetLastQuestion :one
+SELECT question FROM search.answers WHERE conversation_id = $1 AND user_id = $2
+ORDER BY asked_at DESC, id DESC LIMIT 1
+`
+
+type GetLastQuestionParams struct {
+	ConversationID uuid.UUID
+	UserID         uuid.UUID
+}
+
+func (q *Queries) GetLastQuestion(ctx context.Context, arg GetLastQuestionParams) (string, error) {
+	row := q.db.QueryRow(ctx, getLastQuestion, arg.ConversationID, arg.UserID)
+	var question string
+	err := row.Scan(&question)
+	return question, err
+}
+
 const getOwnConversation = `-- name: GetOwnConversation :one
 SELECT id, user_id, title, updated_at FROM search.conversations WHERE id = $1 AND user_id = $2
 `
@@ -163,9 +207,9 @@ func (q *Queries) GetOwnConversation(ctx context.Context, arg GetOwnConversation
 
 const insertAnswer = `-- name: InsertAnswer :exec
 INSERT INTO search.answers (id, conversation_id, user_id, question, asked_at, outcome, text, notes, nearby, latency_ms,
-                            model, scope, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash)
+                            model, scope, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash, rewritten_question)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17)
+        $11, $12, $13, $14, $15, $16, $17, $18)
 `
 
 type InsertAnswerParams struct {
@@ -186,6 +230,7 @@ type InsertAnswerParams struct {
 	RerankModel       string
 	NotFoundThreshold float32
 	ContextHash       string
+	RewrittenQuestion *string
 }
 
 func (q *Queries) InsertAnswer(ctx context.Context, arg InsertAnswerParams) error {
@@ -207,6 +252,7 @@ func (q *Queries) InsertAnswer(ctx context.Context, arg InsertAnswerParams) erro
 		arg.RerankModel,
 		arg.NotFoundThreshold,
 		arg.ContextHash,
+		arg.RewrittenQuestion,
 	)
 	return err
 }
@@ -285,7 +331,7 @@ func (q *Queries) InsertCitations(ctx context.Context, arg InsertCitationsParams
 }
 
 const listAnswersOf = `-- name: ListAnswersOf :many
-SELECT id, tenant_id, conversation_id, user_id, question, asked_at, outcome, text, notes, nearby, latency_ms, model, scope, feedback, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash FROM search.answers WHERE conversation_id = ANY($1::uuid[]) ORDER BY asked_at, id
+SELECT id, tenant_id, conversation_id, user_id, question, asked_at, outcome, text, notes, nearby, latency_ms, model, scope, feedback, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash, rewritten_question FROM search.answers WHERE conversation_id = ANY($1::uuid[]) ORDER BY asked_at, id
 `
 
 func (q *Queries) ListAnswersOf(ctx context.Context, conversationIds []uuid.UUID) ([]SearchAnswer, error) {
@@ -317,6 +363,7 @@ func (q *Queries) ListAnswersOf(ctx context.Context, conversationIds []uuid.UUID
 			&i.RerankModel,
 			&i.NotFoundThreshold,
 			&i.ContextHash,
+			&i.RewrittenQuestion,
 		); err != nil {
 			return nil, err
 		}

@@ -4,6 +4,8 @@ package search
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/morse/atlas/server/internal/audit"
 	"github.com/morse/atlas/server/internal/events"
 	"github.com/morse/atlas/server/internal/platform/dbtest"
+	"github.com/morse/atlas/server/internal/platform/models/llm"
 	"github.com/morse/atlas/server/internal/platform/models/tei"
 )
 
@@ -290,5 +293,172 @@ func TestAPassageOfARestrictedSetIsFoundOnlyByItsReaders(t *testing.T) {
 	}
 	if found := ask(other); len(found) != 0 {
 		t.Fatalf("someone else found %+v; a restricted passage must not be found, not even as a weak match", found)
+	}
+}
+
+func TestATrialAnswersLikeAskButStoresNothing(t *testing.T) {
+	w := newWorld(t, Config{Reranker: fixedReranker(0.9), LLM: &scriptedLLM{pieces: []string{"Forty newton metres [1]."}}})
+	w.chunk("PNT-014", "Tightening torque of the spindle is 40 Nm", w.acl, true)
+	trial, err := w.svc.Trial(w.ctx, Question{Who: w.who, Text: "tightening torque?"})
+	if err != nil || trial.Outcome != OutcomeAnswered || len(trial.Citations) != 1 || trial.Citations[0].Label != "PNT-014" || trial.TopScore != 0.9 {
+		t.Fatalf("trial = %+v, %v", trial, err)
+	}
+	kept, _, err := w.svc.Conversations(w.ctx, w.who, ConversationPage{Size: 10})
+	events, _, _ := (&audit.Service{DB: w.svc.DB}).List(w.ctx, w.who.TenantID, audit.Page{Size: 10})
+	if err != nil || len(kept) != 0 || len(events) != 0 {
+		t.Fatalf("a trial left %d conversations and %d audit events, %v", len(kept), len(events), err)
+	}
+}
+
+func TestATrialBelowTheThresholdNamesThePassagesItWouldHaveCited(t *testing.T) {
+	w := newWorld(t, Config{Reranker: fixedReranker(0.05)})
+	w.chunk("PNT-014", "Tightening torque", w.acl, true)
+	trial, err := w.svc.Trial(w.ctx, Question{Who: w.who, Text: "tightening torque"})
+	if err != nil || trial.Outcome != OutcomeNotFound || len(trial.Citations) != 1 || trial.TopScore != 0.05 {
+		t.Fatalf("trial = %+v, %v", trial, err)
+	}
+}
+
+// followUpLLM turns a follow-up into a fixed standalone question (or fails to) and answers every other request.
+type followUpLLM struct {
+	rewrite     string
+	rewriteErr  error
+	rewriteSeen []string
+}
+
+func (f *followUpLLM) Model() string { return "test-model" }
+func (f *followUpLLM) Stream(_ context.Context, req llm.Request, onToken func(string) error) error {
+	if !strings.HasPrefix(req.Messages[0].Content, "You rewrite") {
+		return onToken("Forty newton metres [1].")
+	}
+	f.rewriteSeen = append(f.rewriteSeen, req.Messages[1].Content)
+	if f.rewriteErr != nil {
+		return f.rewriteErr
+	}
+	return onToken(f.rewrite)
+}
+
+// askTwice asks first in a new conversation and then second in the same one; it returns the second answer.
+func (w world) askTwice(first, second string) Answer {
+	w.t.Helper()
+	opening := &recordingSink{}
+	if err := w.svc.Ask(w.ctx, Question{Who: w.who, Text: first}, opening); err != nil || opening.done == nil {
+		w.t.Fatalf("first question: %v, %+v", err, opening)
+	}
+	reply := &recordingSink{}
+	q := Question{Who: w.who, Text: second, ConversationID: opening.done.ConversationID}
+	if err := w.svc.Ask(w.ctx, q, reply); err != nil || reply.done == nil {
+		w.t.Fatalf("second question: %v, %+v", err, reply)
+	}
+	return *reply.done
+}
+
+func (w world) rewrittenQuestionOf(answer uuid.UUID) *string {
+	w.t.Helper()
+	var stored *string
+	w.exec(func(tx pgx.Tx) error {
+		return tx.QueryRow(w.ctx, `SELECT rewritten_question FROM search.answers WHERE id = $1`, answer).Scan(&stored)
+	})
+	return stored
+}
+
+func TestAFollowUpIsSearchedForAsAStandaloneQuestionAndSaysSo(t *testing.T) {
+	gen := &followUpLLM{rewrite: "unit of the tightening torque of the spindle"}
+	w := newWorld(t, Config{Reranker: fixedReranker(0.9), LLM: gen})
+	w.chunk("PNT-014", "Tightening torque of the spindle is 40 Nm", w.acl, true)
+	answer := w.askTwice("tightening torque of the spindle", "and the unit?")
+	stored := w.rewrittenQuestionOf(answer.ID)
+	if answer.Outcome != OutcomeAnswered || len(answer.Citations) != 1 || !slices.Contains(answer.Notes, "Searched for: "+gen.rewrite) {
+		t.Fatalf("answer = %+v; the rewritten question must find the passage and be shown", answer)
+	}
+	if stored == nil || *stored != gen.rewrite || len(gen.rewriteSeen) != 1 || !strings.Contains(gen.rewriteSeen[0], "Previous question: tightening torque of the spindle") {
+		t.Fatalf("stored %v, model saw %q", stored, gen.rewriteSeen)
+	}
+}
+
+func TestAQuestionThatStandsAloneIsNotRewritten(t *testing.T) {
+	gen := &followUpLLM{rewrite: "never used"}
+	w := newWorld(t, Config{Reranker: fixedReranker(0.9), LLM: gen})
+	w.chunk("PNT-014", "Tightening torque of the spindle is 40 Nm", w.acl, true)
+	answer := w.askTwice("tightening torque of the spindle", "what is the tightening torque of the spindle on line two today")
+	if len(gen.rewriteSeen) != 0 || w.rewrittenQuestionOf(answer.ID) != nil {
+		t.Fatalf("rewrote a complete question: %q", gen.rewriteSeen)
+	}
+}
+
+func TestWithoutALanguageModelAFollowUpIsSearchedForAsAsked(t *testing.T) {
+	w := newWorld(t, Config{Reranker: fixedReranker(0.9)})
+	w.chunk("PNT-014", "Tightening torque of the spindle is 40 Nm", w.acl, true)
+	answer := w.askTwice("tightening torque of the spindle", "torque spindle?")
+	if len(answer.Citations) != 1 || w.rewrittenQuestionOf(answer.ID) != nil {
+		t.Fatalf("answer = %+v", answer)
+	}
+}
+
+func TestAFailedRewriteSearchesForTheQuestionAsAskedAndShowsNoNote(t *testing.T) {
+	gen := &followUpLLM{rewriteErr: errors.New("model unavailable")}
+	w := newWorld(t, Config{Reranker: fixedReranker(0.9), LLM: gen})
+	w.chunk("PNT-014", "Tightening torque of the spindle is 40 Nm", w.acl, true)
+	answer := w.askTwice("tightening torque of the spindle", "torque spindle?")
+	if len(gen.rewriteSeen) != 1 || answer.Outcome != OutcomeAnswered || w.rewrittenQuestionOf(answer.ID) != nil || len(answer.Notes) != 0 {
+		t.Fatalf("answer = %+v after %d rewrites", answer, len(gen.rewriteSeen))
+	}
+}
+
+func (w world) found(question string) []uuid.UUID {
+	w.t.Helper()
+	ret, err := w.svc.retrieve(w.ctx, w.who, question)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	ids := make([]uuid.UUID, len(ret.Candidates))
+	for i, c := range ret.Candidates {
+		ids[i] = c.ChunkID
+	}
+	return ids
+}
+
+// chooseWordLanguage sets the organization's language and re-labels its passages, as the job after the change does.
+func (w world) chooseWordLanguage(language string) {
+	w.t.Helper()
+	w.exec(func(tx pgx.Tx) error {
+		if _, err := tx.Exec(w.ctx, `INSERT INTO documents.search_language (language) VALUES ($1)`, language); err != nil {
+			return err
+		}
+		_, err := tx.Exec(w.ctx, `UPDATE documents.chunks SET lang = documents.tenant_regconfig()`)
+		return err
+	})
+}
+
+func TestAccentsDoNotMatter(t *testing.T) {
+	w := newWorld(t, Config{})
+	plain := w.chunk("PNT-001", "Procedimiento de la linea de produccion", w.acl, true)
+	accented := w.chunk("PNT-002", "Revisión del montaje en la línea de embalaje", w.acl, true)
+	if got := w.found("línea producción"); len(got) == 0 || got[0] != plain {
+		t.Fatalf("an accented question found %v, want the unaccented passage %s first", got, plain)
+	}
+	if got := w.found("revision montaje linea"); len(got) == 0 || got[0] != accented {
+		t.Fatalf("an unaccented question found %v, want the accented passage %s first", got, accented)
+	}
+}
+
+func TestSpanishStemsMatch(t *testing.T) {
+	w := newWorld(t, Config{})
+	passage := w.chunk("PNT-001", "El husillo gira con la tuerca apretada", w.acl, true)
+	if got := w.found("husillos"); len(got) != 0 {
+		t.Fatalf("without a language the plural found %v; stems come with the organization's choice", got)
+	}
+	w.chooseWordLanguage("es")
+	if got := w.found("husillos tuercas"); len(got) != 1 || got[0] != passage {
+		t.Fatalf("with Spanish the plurals found %v, want %s", got, passage)
+	}
+}
+
+func TestEnglishStemsMatch(t *testing.T) {
+	w := newWorld(t, Config{})
+	passage := w.chunk("PNT-001", "The spindles are tightened", w.acl, true)
+	w.chooseWordLanguage("en")
+	if got := w.found("spindle tightening"); len(got) != 1 || got[0] != passage {
+		t.Fatalf("with English the stems found %v, want %s", got, passage)
 	}
 }

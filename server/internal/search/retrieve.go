@@ -122,7 +122,7 @@ func (s *Service) searchWords(ctx context.Context, l lookup) ([]uuid.UUID, error
 }
 
 func (s *Service) searchVectors(ctx context.Context, l lookup) ([]uuid.UUID, error) {
-	if s.Embedder == nil || s.EmbedModel != bgeM3 {
+	if !s.meaningSearchWorks() {
 		return nil, nil
 	}
 	clock := newStageClock()

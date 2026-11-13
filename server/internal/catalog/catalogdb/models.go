@@ -48,19 +48,21 @@ type AccessTenant struct {
 }
 
 type AccessUser struct {
-	ID            uuid.UUID
-	TenantID      uuid.UUID
-	Name          string
-	Email         string
-	Department    string
-	PasswordHash  string
-	TotpSecretEnc []byte
-	IsActive      bool
-	FailedLogins  int32
-	LockedUntil   *time.Time
-	LastActiveAt  *time.Time
-	Hue           int32
-	CreatedAt     time.Time
+	ID                 uuid.UUID
+	TenantID           uuid.UUID
+	Name               string
+	Email              string
+	Department         string
+	PasswordHash       string
+	TotpSecretEnc      []byte
+	IsActive           bool
+	FailedLogins       int32
+	LockedUntil        *time.Time
+	LastActiveAt       *time.Time
+	Hue                int32
+	CreatedAt          time.Time
+	MustChangePassword bool
+	TotpLastStep       *int64
 }
 
 type AccessUserRole struct {
@@ -173,6 +175,7 @@ type DocumentsDocumentVersion struct {
 	Pages       *int32
 	CreatedAt   time.Time
 	ParsedAt    *time.Time
+	Revision    string
 }
 
 type DocumentsFieldProvenance struct {
@@ -183,6 +186,12 @@ type DocumentsFieldProvenance struct {
 	Source     string
 	Confidence float32
 	UpdatedAt  time.Time
+}
+
+type DocumentsSearchLanguage struct {
+	TenantID  uuid.UUID
+	Language  string
+	UpdatedAt time.Time
 }
 
 type DocumentsVDocument struct {
@@ -281,6 +290,14 @@ type PlatformIdempotencyKey struct {
 	CreatedAt   time.Time
 }
 
+type PlatformSigningKey struct {
+	TenantID         uuid.UUID
+	KeyID            string
+	PublicKey        []byte
+	PrivateKeySealed []byte
+	CreatedAt        time.Time
+}
+
 type SearchAnswer struct {
 	ID                uuid.UUID
 	TenantID          uuid.UUID
@@ -301,6 +318,7 @@ type SearchAnswer struct {
 	RerankModel       string
 	NotFoundThreshold float32
 	ContextHash       string
+	RewrittenQuestion *string
 }
 
 type SearchAnswerCandidate struct {
@@ -385,7 +403,7 @@ type SourcesScan struct {
 	HeldDeletions int32
 	Error         *string
 	StartedAt     time.Time
-	FinishedAt    time.Time
+	FinishedAt    *time.Time
 }
 
 type SourcesSource struct {
@@ -402,4 +420,5 @@ type SourcesSource struct {
 	LastError      *string
 	CreatedAt      time.Time
 	AclSetID       *uuid.UUID
+	RemovedAt      *time.Time
 }
