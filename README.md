@@ -24,7 +24,7 @@ Your documents stay where they live. Every answer carries its source.
 
 ---
 
-> **Atlas** indexes an organization's documentation in place (network folders, shared drives, procedures, manuals, norms, emails) and answers questions in natural language with the exact citation: document, revision, page and section. When the evidence is missing, it says so. Built by [Morse Technologies](https://morsetechnologies.es) for teams that need answers they can trust and trace.
+> **Atlas** indexes an organization's documentation in place (network folders, shared drives, procedures, manuals, norms) and answers questions in natural language with the exact citation: document, revision, page and section. When the evidence is missing, it says so. Built by [Morse Technologies](https://morsetechnologies.es) for teams that need answers they can trust and trace.
 
 ---
 
@@ -60,7 +60,7 @@ cd deploy/compose && cp .env.example .env && docker compose up -d --build
 | **Dashboard** | NO | YES | Daily overview of activity, coverage and open issues. |
 | **Quality alerts** | NO | YES | Outdated revisions, contradictions, broken references between documents. |
 | **Knowledge map** | NO | YES | Graph of documents and the entities they mention. |
-| **Signed audit reports and SSO** | NO | YES | Signed audit exports, OIDC sign-in (Entra ID, Keycloak). |
+| **Signed audit reports** | NO | YES | Signed audit exports; Core exports an unsigned, labeled file. |
 
 *Pro features are unlocked by an offline signed license. The UI locks them and the backend enforces it.*
 
@@ -85,7 +85,7 @@ server/           Go backend: one binary (atlas) with roles api, worker, watch, 
   db/             SQL migrations and queries (sqlc)
   internal/       Modules: access, catalog, documents, events, jobs, sources, httpapi
 app/              Next.js frontend: Ask, Documents, Sources, Settings, Access
-  src/lib/api/    Typed AtlasApi interface and the mock adapter used until the API is wired
+  src/lib/api/    Typed AtlasApi interface, the HTTP adapter for the server and the demo adapter
   src/ui/         Atoms, cells, organisms, templates
 deploy/compose/   Docker Compose stack: Postgres 18 + pgvector, docling-serve, Gotenberg, atlas roles
 ```
@@ -133,7 +133,7 @@ docker compose exec worker /atlas source add --name Docs --path /sources/docs
 docker compose exec worker /atlas quarantine list
 ```
 
-Put documents in `deploy/compose/sources/` (or set `ATLAS_SOURCES_DIR`). API at **http://localhost:8080**.
+Put documents in `deploy/compose/sources/` (or set `ATLAS_SOURCES_DIR`). API at **http://localhost:8080**. The setup assistant at **https://localhost** also creates the organization and the first administrator; further accounts are created from the People screen.
 
 ---
 
@@ -154,6 +154,7 @@ make gen                # regenerate sqlc queries and the OpenAPI server
 make lint               # golangci-lint
 make test               # unit and architecture tests
 make test-integration   # real Postgres via testcontainers (Docker)
+make vuln               # known vulnerabilities (govulncheck)
 
 # Frontend
 cd app

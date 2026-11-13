@@ -24,7 +24,7 @@
 
 ---
 
-> **Atlas** 就地索引组织的文档（网络文件夹、共享盘、规程、手册、标准、邮件），用自然语言回答问题，并给出精确引用：文档、版本、页码和章节。证据不足时，它会直说。由 [Morse Technologies](https://morsetechnologies.es) 打造，服务于需要可信、可追溯答案的团队。
+> **Atlas** 就地索引组织的文档（网络文件夹、共享盘、规程、手册、标准），用自然语言回答问题，并给出精确引用：文档、版本、页码和章节。证据不足时，它会直说。由 [Morse Technologies](https://morsetechnologies.es) 打造，服务于需要可信、可追溯答案的团队。
 
 ---
 
@@ -59,7 +59,7 @@ cd server && make up
 | **仪表盘** | 否 | 是 | 每日活动、覆盖率和未决问题概览。 |
 | **质量告警** | 否 | 是 | 过期版本、相互矛盾、文档间失效的引用。 |
 | **知识图谱** | 否 | 是 | 文档及其提及实体的关系图。 |
-| **审计报告与 SSO** | 否 | 是 | 可导出的审计记录，LDAP 和 Entra ID 登录。 |
+| **签名审计报告** | 否 | 是 | 带签名的审计导出；Core 导出带标注的未签名文件。 |
 
 *Pro 功能通过离线签名许可证解锁。界面会锁定这些功能，后端同样强制执行。*
 
@@ -153,6 +153,7 @@ make gen                # 重新生成 sqlc 查询和 OpenAPI 服务端
 make lint               # golangci-lint
 make test               # 单元测试和架构测试
 make test-integration   # 通过 testcontainers 使用真实 Postgres (需要 Docker)
+make vuln               # 已知漏洞检查 (govulncheck)
 
 # 前端
 cd app

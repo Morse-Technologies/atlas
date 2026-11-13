@@ -24,7 +24,7 @@ Tus documentos se quedan donde están. Cada respuesta lleva su fuente.
 
 ---
 
-> **Atlas** indexa la documentación de una organización allí donde está (carpetas de red, unidades compartidas, procedimientos, manuales, normas, correos) y responde preguntas en lenguaje natural con la cita exacta: documento, revisión, página y sección. Cuando falta evidencia, lo dice. Creado por [Morse Technologies](https://morsetechnologies.es) para equipos que necesitan respuestas fiables y trazables.
+> **Atlas** indexa la documentación de una organización allí donde está (carpetas de red, unidades compartidas, procedimientos, manuales, normas) y responde preguntas en lenguaje natural con la cita exacta: documento, revisión, página y sección. Cuando falta evidencia, lo dice. Creado por [Morse Technologies](https://morsetechnologies.es) para equipos que necesitan respuestas fiables y trazables.
 
 ---
 
@@ -59,7 +59,7 @@ cd server && make up
 | **Panel** | NO | SÍ | Resumen diario de actividad, cobertura e incidencias abiertas. |
 | **Alertas de calidad** | NO | SÍ | Revisiones obsoletas, contradicciones, referencias rotas entre documentos. |
 | **Mapa de conocimiento** | NO | SÍ | Grafo de documentos y de las entidades que mencionan. |
-| **Informes de auditoría y SSO** | NO | SÍ | Registro de auditoría exportable, acceso con LDAP y Entra ID. |
+| **Informes de auditoría firmados** | NO | SÍ | Exportación firmada de la auditoría; Core exporta un fichero rotulado sin firma. |
 
 *Las funciones Pro se desbloquean con una licencia firmada offline. La interfaz las bloquea y el backend lo hace cumplir.*
 
@@ -153,6 +153,7 @@ make gen                # regenera las consultas sqlc y el servidor OpenAPI
 make lint               # golangci-lint
 make test               # tests unitarios y de arquitectura
 make test-integration   # Postgres real con testcontainers (Docker)
+make vuln               # vulnerabilidades conocidas (govulncheck)
 
 # Frontend
 cd app
