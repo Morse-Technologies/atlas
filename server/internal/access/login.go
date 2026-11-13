@@ -71,13 +71,17 @@ func (s *Service) checkPassword(ctx context.Context, tx pgx.Tx, c credentials) (
 	if err != nil {
 		return Challenge{}, false, fmt.Errorf("get user: %w", err)
 	}
-	now := s.Now()
-	locked := user.LockedUntil != nil && user.LockedUntil.After(now)
-	if !user.IsActive || locked || !VerifyPassword(user.PasswordHash, c.password) {
+	if !usable(user, s.Now()) || !VerifyPassword(user.PasswordHash, c.password) {
 		return Challenge{}, false, s.recordFailure(ctx, tx, user.ID)
 	}
 	id, err := s.storeChallenge(ctx, q, user)
 	return Challenge{ID: id, NeedsCode: user.TotpSecretEnc != nil}, err == nil, err
+}
+
+// usable is true when the account may start a session at now: it is active and not locked.
+func usable(user accessdb.AccessUser, now time.Time) bool {
+	locked := user.LockedUntil != nil && user.LockedUntil.After(now)
+	return user.IsActive && !locked
 }
 
 // recordFailure counts a failed attempt (locking the account at the limit) and leaves a trace in the audit log.
@@ -151,6 +155,9 @@ func (s *Service) completeChallenge(ctx context.Context, tx pgx.Tx, a attempt) (
 	if err != nil {
 		return SessionTicket{}, false, db.NotFoundIfNoRows(err, "user")
 	}
+	if !usable(user, s.Now()) { // locked or deactivated since the password step
+		return SessionTicket{}, false, nil
+	}
 	ok, err := s.secondFactorPassed(ctx, a.withUser(user))
 	if err != nil || !ok {
 		return SessionTicket{}, false, err
@@ -173,12 +180,26 @@ func (s *Service) secondFactorPassed(ctx context.Context, a attempt) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("bump attempts: %w", err)
 	}
-	secret, err := s.Box.Open(user.TotpSecretEnc)
+	accepted, err := s.acceptCode(ctx, a, attempts <= maxChallengeAttempts)
+	if err != nil || accepted {
+		return accepted, err
+	}
+	return false, s.recordFailure(ctx, a.tx, user.ID)
+}
+
+// acceptCode is true when the code is right and its time step was not used before; it then keeps the step.
+func (s *Service) acceptCode(ctx context.Context, a attempt, withinAttempts bool) (bool, error) {
+	secret, err := s.Box.Open(a.user.TotpSecretEnc)
 	if err != nil {
 		return false, err
 	}
-	if attempts <= maxChallengeAttempts && VerifyTOTP(secret, a.code, s.Now()) {
-		return true, nil
+	step, matches := MatchTOTP(secret, a.code, s.Now())
+	if !withinAttempts || !matches {
+		return false, nil
 	}
-	return false, s.recordFailure(ctx, a.tx, user.ID)
+	taken, err := accessdb.New(a.tx).SetTOTPStep(ctx, accessdb.SetTOTPStepParams{ID: a.user.ID, Step: step})
+	if err != nil {
+		return false, fmt.Errorf("keep totp step: %w", err)
+	}
+	return taken == 1, nil
 }

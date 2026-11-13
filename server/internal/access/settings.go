@@ -11,6 +11,7 @@ import (
 
 	"github.com/morse/atlas/server/internal/access/accessdb"
 	"github.com/morse/atlas/server/internal/audit"
+	"github.com/morse/atlas/server/internal/platform/db"
 	"github.com/morse/atlas/server/internal/platform/errs"
 )
 
@@ -77,6 +78,21 @@ func parseSettings(orgName string, stored []byte) (Settings, error) {
 	}
 	s.OrgName = orgName
 	return s, nil
+}
+
+// OrgName returns the name of the caller's own organization: the query reads the tenant of the transaction, so it cannot
+// give another tenant's.
+func (s *Service) OrgName(ctx context.Context, p Principal) (string, error) {
+	var name string
+	err := s.DB.InScopeTx(ctx, db.Scope{Tenant: p.TenantID, User: p.UserID}, func(tx pgx.Tx) error {
+		row, err := accessdb.New(tx).GetCurrentTenantSettings(ctx)
+		name = row.OrgName
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("read organization name: %w", err)
+	}
+	return name, nil
 }
 
 // Settings returns the organization's settings.

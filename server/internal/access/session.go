@@ -31,9 +31,6 @@ func (s *Service) openSession(ctx context.Context, q *accessdb.Queries, user acc
 	}
 	now := s.Now()
 	expires := now.Add(SessionTTL)
-	if err := q.DeleteExpiredSessions(ctx, now); err != nil { // no background job yet; sessions are few
-		return SessionTicket{}, fmt.Errorf("purge sessions: %w", err)
-	}
 	err = q.CreateSession(ctx, accessdb.CreateSessionParams{TenantID: user.TenantID, UserID: user.ID,
 		TokenHash: hash, ExpiresAt: expires})
 	if err != nil {
@@ -82,7 +79,8 @@ func (s *Service) principalFor(ctx context.Context, tx pgx.Tx, session accessdb.
 	if err != nil {
 		return Principal{}, err
 	}
-	p := Principal{SessionID: session.ID, UserID: user.ID, TenantID: session.TenantID, Roles: roles[user.ID]}
+	p := Principal{SessionID: session.ID, UserID: user.ID, TenantID: session.TenantID, Roles: roles[user.ID],
+		MustChangePassword: user.MustChangePassword}
 	if s.idleTooLong(p, session) {
 		return Principal{}, errs.ErrUnauthenticated
 	}

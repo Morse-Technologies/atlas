@@ -137,16 +137,17 @@ func (q *Queries) CreateTenant(ctx context.Context, orgName string) (uuid.UUID, 
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO access.users (name, email, password_hash, totp_secret_enc, hue)
-VALUES ($1, $2, $3, $4, $5) RETURNING id
+INSERT INTO access.users (name, email, password_hash, totp_secret_enc, hue, must_change_password)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
 `
 
 type CreateUserParams struct {
-	Name          string
-	Email         string
-	PasswordHash  string
-	TotpSecretEnc []byte
-	Hue           int32
+	Name               string
+	Email              string
+	PasswordHash       string
+	TotpSecretEnc      []byte
+	Hue                int32
+	MustChangePassword bool
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (uuid.UUID, error) {
@@ -156,6 +157,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (uuid.UU
 		arg.PasswordHash,
 		arg.TotpSecretEnc,
 		arg.Hue,
+		arg.MustChangePassword,
 	)
 	var id uuid.UUID
 	err := row.Scan(&id)
@@ -189,12 +191,31 @@ func (q *Queries) DeleteChallengesOf(ctx context.Context, userID uuid.UUID) erro
 	return err
 }
 
-const deleteExpiredSessions = `-- name: DeleteExpiredSessions :exec
-DELETE FROM access.sessions WHERE expires_at <= $1
+const deleteExpiredChallenges = `-- name: DeleteExpiredChallenges :exec
+DELETE FROM access.login_challenges WHERE tenant_id = $1 AND expires_at <= $2
 `
 
-func (q *Queries) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
-	_, err := q.db.Exec(ctx, deleteExpiredSessions, now)
+type DeleteExpiredChallengesParams struct {
+	TenantID uuid.UUID
+	Now      time.Time
+}
+
+func (q *Queries) DeleteExpiredChallenges(ctx context.Context, arg DeleteExpiredChallengesParams) error {
+	_, err := q.db.Exec(ctx, deleteExpiredChallenges, arg.TenantID, arg.Now)
+	return err
+}
+
+const deleteExpiredSessions = `-- name: DeleteExpiredSessions :exec
+DELETE FROM access.sessions WHERE tenant_id = $1 AND expires_at <= $2
+`
+
+type DeleteExpiredSessionsParams struct {
+	TenantID uuid.UUID
+	Now      time.Time
+}
+
+func (q *Queries) DeleteExpiredSessions(ctx context.Context, arg DeleteExpiredSessionsParams) error {
+	_, err := q.db.Exec(ctx, deleteExpiredSessions, arg.TenantID, arg.Now)
 	return err
 }
 
@@ -329,7 +350,7 @@ func (q *Queries) GetSession(ctx context.Context, arg GetSessionParams) (AccessS
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at FROM access.users WHERE id = $1
+SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at, must_change_password, totp_last_step FROM access.users WHERE id = $1
 `
 
 func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (AccessUser, error) {
@@ -349,12 +370,14 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (AccessUser, error)
 		&i.LastActiveAt,
 		&i.Hue,
 		&i.CreatedAt,
+		&i.MustChangePassword,
+		&i.TotpLastStep,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at FROM access.users WHERE lower(email) = lower($1)
+SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at, must_change_password, totp_last_step FROM access.users WHERE lower(email) = lower($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (AccessUser, error) {
@@ -374,8 +397,44 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (AccessUser,
 		&i.LastActiveAt,
 		&i.Hue,
 		&i.CreatedAt,
+		&i.MustChangePassword,
+		&i.TotpLastStep,
 	)
 	return i, err
+}
+
+const listActivePeopleNames = `-- name: ListActivePeopleNames :many
+SELECT id, name FROM access.users WHERE is_active AND id > $1 ORDER BY id LIMIT $2
+`
+
+type ListActivePeopleNamesParams struct {
+	After    uuid.UUID
+	PageSize int32
+}
+
+type ListActivePeopleNamesRow struct {
+	ID   uuid.UUID
+	Name string
+}
+
+func (q *Queries) ListActivePeopleNames(ctx context.Context, arg ListActivePeopleNamesParams) ([]ListActivePeopleNamesRow, error) {
+	rows, err := q.db.Query(ctx, listActivePeopleNames, arg.After, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActivePeopleNamesRow
+	for rows.Next() {
+		var i ListActivePeopleNamesRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listReadableACLSets = `-- name: ListReadableACLSets :many
@@ -461,7 +520,7 @@ func (q *Queries) ListTenants(ctx context.Context) ([]ListTenantsRow, error) {
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at FROM access.users WHERE id > $1 ORDER BY id LIMIT $2
+SELECT id, tenant_id, name, email, department, password_hash, totp_secret_enc, is_active, failed_logins, locked_until, last_active_at, hue, created_at, must_change_password, totp_last_step FROM access.users WHERE id > $1 ORDER BY id LIMIT $2
 `
 
 type ListUsersParams struct {
@@ -492,6 +551,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]AccessU
 			&i.LastActiveAt,
 			&i.Hue,
 			&i.CreatedAt,
+			&i.MustChangePassword,
+			&i.TotpLastStep,
 		); err != nil {
 			return nil, err
 		}
@@ -586,6 +647,16 @@ func (q *Queries) RecordLogin(ctx context.Context, arg RecordLoginParams) error 
 	return err
 }
 
+const requirePasswordChange = `-- name: RequirePasswordChange :exec
+UPDATE access.users SET must_change_password = true WHERE id = $1
+`
+
+// The password was set by an administrator: the person must choose their own at the next sign-in.
+func (q *Queries) RequirePasswordChange(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, requirePasswordChange, id)
+	return err
+}
+
 const saveCurrentTenantSettings = `-- name: SaveCurrentTenantSettings :exec
 UPDATE access.tenants SET org_name = $1, settings = $2
 WHERE id = NULLIF(current_setting('atlas.tenant_id', true), '')::uuid
@@ -619,7 +690,8 @@ func (q *Queries) SetACLSetReaders(ctx context.Context, arg SetACLSetReadersPara
 }
 
 const setPasswordHash = `-- name: SetPasswordHash :execrows
-UPDATE access.users SET password_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2
+UPDATE access.users SET password_hash = $1, failed_logins = 0, locked_until = NULL,
+  must_change_password = false WHERE id = $2
 `
 
 type SetPasswordHashParams struct {
@@ -636,7 +708,7 @@ func (q *Queries) SetPasswordHash(ctx context.Context, arg SetPasswordHashParams
 }
 
 const setTOTPSecret = `-- name: SetTOTPSecret :execrows
-UPDATE access.users SET totp_secret_enc = $1 WHERE id = $2
+UPDATE access.users SET totp_secret_enc = $1, totp_last_step = NULL WHERE id = $2
 `
 
 type SetTOTPSecretParams struct {
@@ -646,6 +718,24 @@ type SetTOTPSecretParams struct {
 
 func (q *Queries) SetTOTPSecret(ctx context.Context, arg SetTOTPSecretParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setTOTPSecret, arg.TotpSecretEnc, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setTOTPStep = `-- name: SetTOTPStep :execrows
+UPDATE access.users SET totp_last_step = $1::bigint WHERE id = $2 AND (totp_last_step IS NULL OR totp_last_step < $1::bigint)
+`
+
+type SetTOTPStepParams struct {
+	Step int64
+	ID   uuid.UUID
+}
+
+// Takes the step only if it is newer than the last one, so two sign-ins with the same code cannot both pass.
+func (q *Queries) SetTOTPStep(ctx context.Context, arg SetTOTPStepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTOTPStep, arg.Step, arg.ID)
 	if err != nil {
 		return 0, err
 	}

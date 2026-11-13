@@ -33,19 +33,21 @@ func NewTOTPSecret() ([]byte, error) {
 	return secret, nil
 }
 
-// VerifyTOTP reports whether code is valid for secret around now.
-// shortcut: a valid code can be replayed inside its 30 s window; store the last used step if that matters.
-func VerifyTOTP(secret []byte, code string, now time.Time) bool {
+// MatchTOTP reports whether code is valid for secret around now and, if so, the time step it belongs to.
+// The caller refuses a step it has accepted before, so a code works once.
+func MatchTOTP(secret []byte, code string, now time.Time) (step int64, ok bool) {
 	if len(code) != totpCodeLen {
-		return false
+		return 0, false
 	}
-	step := now.Unix() / int64(totpStep.Seconds())
-	valid := 0
+	current := now.Unix() / int64(totpStep.Seconds())
 	for skew := -totpSkewSteps; skew <= totpSkewSteps; skew++ {
-		want := totpCode(secret, uint64(step+int64(skew)))
-		valid |= subtle.ConstantTimeCompare([]byte(code), []byte(want))
+		candidate := current + int64(skew)
+		want := totpCode(secret, uint64(candidate))
+		if subtle.ConstantTimeCompare([]byte(code), []byte(want)) == 1 {
+			step, ok = candidate, true
+		}
 	}
-	return valid == 1
+	return step, ok
 }
 
 // TOTPURI is the otpauth:// URI an authenticator app reads from a QR code.

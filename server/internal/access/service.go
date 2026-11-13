@@ -42,6 +42,8 @@ type User struct {
 	IsActive     bool
 	LastActiveAt *time.Time
 	Hue          int
+	// MustChangePassword: the password was set by someone else and has not been replaced yet.
+	MustChangePassword bool
 }
 
 // Principal is who a request acts as. It is rebuilt from the database on every request, so a role change
@@ -51,6 +53,8 @@ type Principal struct {
 	UserID    uuid.UUID
 	TenantID  uuid.UUID
 	Roles     []Role
+	// MustChangePassword limits the principal to changing its password (see the HTTP layer).
+	MustChangePassword bool
 }
 
 // Has reports whether the principal holds role.
@@ -102,7 +106,7 @@ func (s *Service) rolesOf(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map[
 
 func toUser(row accessdb.AccessUser, roles []Role) User {
 	return User{ID: row.ID, Name: row.Name, Email: row.Email, Department: row.Department, Roles: roles,
-		IsActive: row.IsActive, LastActiveAt: row.LastActiveAt, Hue: int(row.Hue)}
+		IsActive: row.IsActive, LastActiveAt: row.LastActiveAt, Hue: int(row.Hue), MustChangePassword: row.MustChangePassword}
 }
 
 const hueDegrees = 360

@@ -17,19 +17,23 @@ func TestTOTPMatchesRFC6238Vectors(t *testing.T) {
 	}
 }
 
-func TestVerifyTOTPAcceptsOneStepOfDriftNotTwo(t *testing.T) {
+func TestMatchTOTPAcceptsOneStepOfDriftNotTwoAndNamesTheStep(t *testing.T) {
 	secret := []byte("12345678901234567890")
 	now := time.Unix(59, 0)
 	code := totpCode(secret, 1) // step of t=59
-	for skew, want := range map[time.Duration]bool{0: true, 30 * time.Second: true, 60 * time.Second: false} {
-		if got := VerifyTOTP(secret, code, now.Add(skew)); got != want {
-			t.Errorf("skew %v: got %v, want %v", skew, got, want)
+	cases := map[time.Duration]struct {
+		step int64
+		ok   bool
+	}{0: {1, true}, 30 * time.Second: {1, true}, -30 * time.Second: {1, true}, 60 * time.Second: {0, false}}
+	for skew, want := range cases {
+		if step, ok := MatchTOTP(secret, code, now.Add(skew)); step != want.step || ok != want.ok {
+			t.Errorf("skew %v: got step %d, %v; want step %d, %v", skew, step, ok, want.step, want.ok)
 		}
 	}
 }
 
-func TestVerifyTOTPRejectsWrongLength(t *testing.T) {
-	if VerifyTOTP([]byte("12345678901234567890"), "1234567", time.Unix(59, 0)) {
+func TestMatchTOTPRejectsWrongLength(t *testing.T) {
+	if _, ok := MatchTOTP([]byte("12345678901234567890"), "1234567", time.Unix(59, 0)); ok {
 		t.Fatal("a 7-digit code must not pass")
 	}
 }

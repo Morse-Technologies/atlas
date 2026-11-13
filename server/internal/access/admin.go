@@ -16,13 +16,19 @@ import (
 	"github.com/morse/atlas/server/internal/platform/errs"
 )
 
-// Account administration from the server console. There is no e-mail recovery on-prem (ATLAS.md §13.1): the
-// person who runs the server creates accounts and recovers access with these. Events are recorded as the system.
+// Account administration. There is no e-mail recovery on-prem (ATLAS.md §13.1): an administrator, or whoever
+// runs the server console, creates accounts and recovers access with these.
 
 const passwordBytes = 15 // 20 characters once encoded
 
 // totpRequiredFor are the roles that must sign in with a second factor; for the others it is optional.
 var totpRequiredFor = map[Role]bool{RoleAdmin: true, RoleAuditor: true, RoleCurator: true}
+
+// By is who administers accounts. ActorID is uuid.Nil when it is the server console.
+type By struct {
+	TenantID uuid.UUID
+	ActorID  uuid.UUID
+}
 
 // NewUser is an account to create. WithoutTOTP is allowed only when no role requires a second factor.
 type NewUser struct {
@@ -32,7 +38,7 @@ type NewUser struct {
 	WithoutTOTP bool
 }
 
-// Credentials are shown once to whoever runs the command. The password is never stored in the clear.
+// Credentials are shown once to whoever asked for them. The password is never stored in the clear.
 type Credentials struct {
 	UserID   uuid.UUID
 	Password string // empty when only the second factor was reset
@@ -40,14 +46,15 @@ type Credentials struct {
 }
 
 // CreateUser makes an account with a random password and, unless allowed to skip it, a second factor.
-func (s *Service) CreateUser(ctx context.Context, tenant uuid.UUID, in NewUser) (Credentials, error) {
+// The password is one-time: the person must replace it at the first sign-in.
+func (s *Service) CreateUser(ctx context.Context, by By, in NewUser) (Credentials, error) {
 	if err := validateNewUser(in); err != nil {
 		return Credentials{}, err
 	}
 	var out Credentials
-	err := s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+	err := s.DB.InTenantTx(ctx, by.TenantID, func(tx pgx.Tx) error {
 		var createErr error
-		out, createErr = s.insertUser(ctx, tx, in)
+		out, createErr = s.insertUser(ctx, tx, adding{by: by, in: in})
 		return createErr
 	})
 	return out, err
@@ -75,7 +82,14 @@ func needsTOTP(roles []Role) bool {
 	return false
 }
 
-func (s *Service) insertUser(ctx context.Context, tx pgx.Tx, in NewUser) (Credentials, error) {
+// adding is an account to create, and who creates it.
+type adding struct {
+	by By
+	in NewUser
+}
+
+func (s *Service) insertUser(ctx context.Context, tx pgx.Tx, a adding) (Credentials, error) {
+	in := a.in
 	q := accessdb.New(tx)
 	if err := emailMustBeFree(ctx, q, in.Email); err != nil {
 		return Credentials{}, err
@@ -92,7 +106,8 @@ func (s *Service) insertUser(ctx context.Context, tx pgx.Tx, in NewUser) (Creden
 	if err != nil {
 		return Credentials{}, err
 	}
-	return Credentials{UserID: id, Password: password, TOTPURI: seed.uri(in.Email)}, s.recordSystem(ctx, tx, systemEvent{action: "user.created", user: id})
+	return Credentials{UserID: id, Password: password, TOTPURI: seed.uri(in.Email)},
+		s.recordAdmin(ctx, tx, adminEvent{by: a.by, action: "user.created", user: id})
 }
 
 func emailMustBeFree(ctx context.Context, q *accessdb.Queries, email string) error {
@@ -115,7 +130,7 @@ type storing struct {
 
 func storeUser(ctx context.Context, q *accessdb.Queries, w storing) (uuid.UUID, error) {
 	id, err := q.CreateUser(ctx, accessdb.CreateUserParams{Name: w.in.Name, Email: w.in.Email, PasswordHash: w.hash,
-		TotpSecretEnc: w.sealed, Hue: hueFor(w.in.Email)})
+		TotpSecretEnc: w.sealed, Hue: hueFor(w.in.Email), MustChangePassword: true})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("create user: %w", err)
 	}
@@ -167,34 +182,51 @@ func newPassword() (password, hash string, err error) {
 	return password, hash, err
 }
 
-// ResetPassword gives an account a new random password, lifts any lock and ends its sessions.
-func (s *Service) ResetPassword(ctx context.Context, tenant uuid.UUID, email string) (Credentials, error) {
+// ResetPassword gives an account a new one-time password, lifts any lock and ends its sessions. The person must
+// replace the password at the next sign-in.
+func (s *Service) ResetPassword(ctx context.Context, by By, userID uuid.UUID) (Credentials, error) {
 	var out Credentials
-	err := s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+	err := s.DB.InTenantTx(ctx, by.TenantID, func(tx pgx.Tx) error {
 		q := accessdb.New(tx)
-		user, err := q.GetUserByEmail(ctx, email)
-		if err != nil {
-			return notFoundUser(err)
-		}
 		password, hash, err := newPassword()
 		if err != nil {
 			return err
 		}
-		if _, err := q.SetPasswordHash(ctx, accessdb.SetPasswordHashParams{ID: user.ID, PasswordHash: hash}); err != nil {
-			return fmt.Errorf("set password: %w", err)
+		if err := setPassword(ctx, q, passwordSetting{user: userID, hash: hash}); err != nil {
+			return err
 		}
-		out = Credentials{UserID: user.ID, Password: password}
-		return s.endSessionsAndRecord(ctx, tx, systemEvent{action: "user.password_reset", user: user.ID})
+		out = Credentials{UserID: userID, Password: password}
+		return s.endSessionsAndRecord(ctx, tx, adminEvent{by: by, action: "user.password_reset", user: userID})
 	})
 	return out, err
 }
 
+// passwordSetting is a password hash an administrator puts on an account.
+type passwordSetting struct {
+	user uuid.UUID
+	hash string
+}
+
+func setPassword(ctx context.Context, q *accessdb.Queries, p passwordSetting) error {
+	n, err := q.SetPasswordHash(ctx, accessdb.SetPasswordHashParams{ID: p.user, PasswordHash: p.hash})
+	if err != nil {
+		return fmt.Errorf("set password: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("user: %w", errs.ErrNotFound)
+	}
+	if err := q.RequirePasswordChange(ctx, p.user); err != nil {
+		return fmt.Errorf("require password change: %w", err)
+	}
+	return nil
+}
+
 // ResetTOTP gives an account a new second factor and ends its sessions. Use it when someone loses their phone.
-func (s *Service) ResetTOTP(ctx context.Context, tenant uuid.UUID, email string) (Credentials, error) {
+func (s *Service) ResetTOTP(ctx context.Context, by By, userID uuid.UUID) (Credentials, error) {
 	var out Credentials
-	err := s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+	err := s.DB.InTenantTx(ctx, by.TenantID, func(tx pgx.Tx) error {
 		q := accessdb.New(tx)
-		user, err := q.GetUserByEmail(ctx, email)
+		user, err := q.GetUser(ctx, userID)
 		if err != nil {
 			return notFoundUser(err)
 		}
@@ -202,11 +234,11 @@ func (s *Service) ResetTOTP(ctx context.Context, tenant uuid.UUID, email string)
 		if err != nil {
 			return err
 		}
-		if _, err := q.SetTOTPSecret(ctx, accessdb.SetTOTPSecretParams{ID: user.ID, TotpSecretEnc: seed.sealed}); err != nil {
+		if _, err := q.SetTOTPSecret(ctx, accessdb.SetTOTPSecretParams{ID: userID, TotpSecretEnc: seed.sealed}); err != nil {
 			return fmt.Errorf("set second factor: %w", err)
 		}
-		out = Credentials{UserID: user.ID, TOTPURI: seed.uri(user.Email)}
-		return s.endSessionsAndRecord(ctx, tx, systemEvent{action: "user.totp_reset", user: user.ID})
+		out = Credentials{UserID: userID, TOTPURI: seed.uri(user.Email)}
+		return s.endSessionsAndRecord(ctx, tx, adminEvent{by: by, action: "user.totp_reset", user: userID})
 	})
 	return out, err
 }
@@ -218,13 +250,14 @@ func notFoundUser(err error) error {
 	return fmt.Errorf("get user: %w", err)
 }
 
-// systemEvent is something done to an account from the console.
-type systemEvent struct {
+// adminEvent is something done to an account by an administrator or from the console.
+type adminEvent struct {
+	by     By
 	action string
 	user   uuid.UUID
 }
 
-func (s *Service) endSessionsAndRecord(ctx context.Context, tx pgx.Tx, e systemEvent) error {
+func (s *Service) endSessionsAndRecord(ctx context.Context, tx pgx.Tx, e adminEvent) error {
 	q := accessdb.New(tx)
 	if err := q.DeleteSessionsOf(ctx, e.user); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
@@ -232,9 +265,28 @@ func (s *Service) endSessionsAndRecord(ctx context.Context, tx pgx.Tx, e systemE
 	if err := q.DeleteChallengesOf(ctx, e.user); err != nil {
 		return fmt.Errorf("end challenges: %w", err)
 	}
-	return s.recordSystem(ctx, tx, e)
+	return s.recordAdmin(ctx, tx, e)
 }
 
-func (s *Service) recordSystem(ctx context.Context, tx pgx.Tx, e systemEvent) error {
-	return audit.Record(ctx, tx, audit.Entry{At: s.Now(), Action: e.action, Subject: userSubject(e.user), Detail: "from the server console"})
+// recordAdmin names the administrator as actor; with none, the event says it came from the server console.
+func (s *Service) recordAdmin(ctx context.Context, tx pgx.Tx, e adminEvent) error {
+	entry := audit.Entry{At: s.Now(), Actor: e.by.ActorID, Action: e.action, Subject: userSubject(e.user)}
+	if e.by.ActorID == uuid.Nil {
+		entry.Detail = "from the server console"
+	}
+	return audit.Record(ctx, tx, entry)
+}
+
+// UserIDByEmail resolves an account for the console, which names people by e-mail.
+func (s *Service) UserIDByEmail(ctx context.Context, tenant uuid.UUID, email string) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		user, err := accessdb.New(tx).GetUserByEmail(ctx, email)
+		if err != nil {
+			return notFoundUser(err)
+		}
+		id = user.ID
+		return nil
+	})
+	return id, err
 }

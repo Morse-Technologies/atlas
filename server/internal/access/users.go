@@ -46,10 +46,45 @@ func (s *Service) ListUsers(ctx context.Context, p Principal, page Page) ([]User
 		users, txErr = s.usersAfter(ctx, tx, page)
 		return txErr
 	})
-	if err != nil || int32(len(users)) <= page.Size {
-		return users, uuid.Nil, err
+	if err != nil {
+		return nil, uuid.Nil, err
 	}
-	return users[:page.Size], users[page.Size-1].ID, nil
+	users, next := cutPage(users, page.Size, func(u User) uuid.UUID { return u.ID })
+	return users, next, nil
+}
+
+// PersonName is all that is shown of a person who is not being administered: no e-mail, no roles.
+type PersonName struct {
+	ID   uuid.UUID
+	Name string
+}
+
+// ListPeople returns one page of active people by name, for any signed-in person, and the cursor of the next page.
+func (s *Service) ListPeople(ctx context.Context, p Principal, page Page) ([]PersonName, uuid.UUID, error) {
+	var names []PersonName
+	err := s.DB.InScopeTx(ctx, db.Scope{Tenant: p.TenantID, User: p.UserID}, func(tx pgx.Tx) error {
+		rows, err := accessdb.New(tx).ListActivePeopleNames(ctx, accessdb.ListActivePeopleNamesParams{After: page.After, PageSize: page.Size + 1})
+		if err != nil {
+			return fmt.Errorf("list people names: %w", err)
+		}
+		for _, r := range rows {
+			names = append(names, PersonName{ID: r.ID, Name: r.Name})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, uuid.Nil, err
+	}
+	names, next := cutPage(names, page.Size, func(n PersonName) uuid.UUID { return n.ID })
+	return names, next, nil
+}
+
+// cutPage drops the extra row read to learn whether another page exists; its cursor is the id of the last row kept.
+func cutPage[T any](rows []T, size int32, idOf func(T) uuid.UUID) ([]T, uuid.UUID) {
+	if int32(len(rows)) <= size {
+		return rows, uuid.Nil
+	}
+	return rows[:size], idOf(rows[size-1])
 }
 
 // usersAfter reads one row more than the page, so the caller can tell whether another page exists.
