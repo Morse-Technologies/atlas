@@ -2,18 +2,31 @@
 INSERT INTO sources.sources (name, kind, root_path) VALUES (@name, 'folder', @root_path) RETURNING id;
 
 -- name: ListSources :many
-SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources ORDER BY created_at;
+SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE removed_at IS NULL ORDER BY created_at;
 
 -- name: ListDueSources :many
 SELECT id FROM sources.sources
-WHERE status = 'active' AND (last_scan_at IS NULL OR last_scan_at + rescan_interval <= now());
+WHERE removed_at IS NULL AND status IN ('active', 'error') AND (last_scan_at IS NULL OR last_scan_at + rescan_interval <= now());
 
 -- name: GetSourceRoot :one
-SELECT root_path, max_file_bytes FROM sources.sources WHERE id = @id;
+SELECT root_path, max_file_bytes FROM sources.sources WHERE id = @id AND removed_at IS NULL;
 
 -- name: StartScan :one
-UPDATE sources.sources SET scan_generation = scan_generation + 1 WHERE id = @id
-RETURNING scan_generation, root_path;
+-- Bumps the generation and records the scan as running in one statement; FinishScan closes it.
+WITH bumped AS (
+  UPDATE sources.sources src SET scan_generation = src.scan_generation + 1 WHERE src.id = @id AND src.removed_at IS NULL
+  RETURNING src.id, src.scan_generation, src.root_path
+), started AS (
+  INSERT INTO sources.scans (source_id, generation, status, discovered, changed, moved, deleted, held_deletions, started_at)
+  SELECT id, scan_generation, 'running', 0, 0, 0, 0, 0, @started_at FROM bumped
+  RETURNING id
+)
+SELECT bumped.scan_generation, bumped.root_path, started.id AS scan_id FROM bumped, started;
+
+-- name: FailStaleScans :exec
+-- A scan still running long after the job timeout was interrupted (the process died): close it as failed.
+UPDATE sources.scans SET status = 'failed', error = 'interrupted', finished_at = now()
+WHERE source_id = @source_id AND status = 'running' AND started_at < @older_than;
 
 -- name: ListPresentFiles :many
 SELECT external_id, size, modified_at, content_hash FROM sources.files
@@ -57,12 +70,20 @@ ON CONFLICT (source_id, external_id) DO UPDATE SET
 -- name: GetFileHash :one
 SELECT content_hash FROM sources.files WHERE source_id = @source_id AND external_id = @external_id;
 
--- name: RecordScan :exec
-INSERT INTO sources.scans (source_id, generation, status, discovered, changed, moved, deleted, held_deletions, error, started_at)
-VALUES (@source_id, @generation, @status, @discovered, @changed, @moved, @deleted, @held_deletions, @error, @started_at);
+-- name: FinishScan :exec
+UPDATE sources.scans SET status = @status, discovered = @discovered, changed = @changed, moved = @moved,
+  deleted = @deleted, held_deletions = @held_deletions, error = @error, finished_at = now()
+WHERE id = @id;
 
 -- name: FinishSourceScan :exec
-UPDATE sources.sources SET last_scan_at = now(), last_error = @last_error WHERE id = @id;
+-- A failing scan puts the source in error (unless an administrator paused it); the next good scan clears it.
+UPDATE sources.sources SET last_scan_at = now(), last_error = sqlc.narg('last_error')::text,
+  status = CASE
+    WHEN sqlc.narg('last_error')::text IS NOT NULL AND status <> 'paused' THEN 'error'
+    WHEN sqlc.narg('last_error')::text IS NULL AND status = 'error' THEN 'active'
+    ELSE status
+  END
+WHERE id = @id;
 
 -- name: RecordStep :exec
 INSERT INTO sources.pipeline_steps (source_id, external_id, content_hash, step, status, detail)
@@ -80,10 +101,10 @@ SELECT id, source_id, external_id, reason, detail, at FROM sources.quarantine OR
 DELETE FROM sources.quarantine WHERE id = @id RETURNING source_id, external_id;
 
 -- name: GetSource :one
-SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE id = @id;
+SELECT id, name, kind, root_path, status, last_scan_at, last_error, acl_set_id FROM sources.sources WHERE id = @id AND removed_at IS NULL;
 
 -- name: SetSourceStatus :execrows
-UPDATE sources.sources SET status = @status WHERE id = @id;
+UPDATE sources.sources SET status = @status WHERE id = @id AND removed_at IS NULL;
 
 -- name: ListScansPage :many
 -- failed counts the files quarantined since the scan started: the scan itself only records what it listed.
@@ -109,3 +130,15 @@ UPDATE sources.sources SET acl_set_id = sqlc.narg(acl_set_id) WHERE id = @id;
 
 -- name: GetSourceACLSet :one
 SELECT acl_set_id FROM sources.sources WHERE id = @id;
+
+-- name: RemoveSource :execrows
+-- The source stops being read: it leaves every list, is paused for good measure, and its files count as deleted.
+WITH removed AS (
+  UPDATE sources.sources SET removed_at = @removed_at, status = 'paused' WHERE id = @id AND removed_at IS NULL RETURNING id
+), gone AS (
+  UPDATE sources.files SET state = 'deleted', updated_at = now() WHERE source_id IN (SELECT id FROM removed)
+)
+SELECT count(*) FROM removed;
+
+-- name: GetSourceKinds :many
+SELECT id, kind FROM sources.sources WHERE id = ANY(@ids::uuid[]);

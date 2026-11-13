@@ -51,6 +51,10 @@ SELECT doc AS id FROM (
   SELECT src AS doc FROM graph.edges WHERE status <> 'rejected' UNION ALL SELECT dst FROM graph.edges WHERE status <> 'rejected'
 ) e GROUP BY doc ORDER BY count(*) DESC, doc LIMIT @top;
 
+-- name: ListRecentDocs :many
+-- The newest documents, for a map with no links yet. COALESCE: a nil Go slice reaches SQL as NULL.
+SELECT id FROM documents.v_documents WHERE id <> ALL(COALESCE(@ids::uuid[], '{}')) ORDER BY created_at DESC, id LIMIT @top;
+
 -- name: SetEdgeStatus :execrows
 UPDATE graph.edges SET status = @status WHERE id = @id;
 
@@ -101,3 +105,13 @@ SELECT severity, count(*)::int AS total FROM graph.alerts WHERE status = 'open' 
 
 -- name: ListDocsInDepartment :many
 SELECT id FROM documents.v_documents WHERE department = @department ORDER BY id LIMIT @top;
+
+-- name: ListLinksOf :many
+-- The documents a document references or duplicates, in either direction, once each. Rejected links are left out,
+-- and so is any document the person cannot read: v_documents is read as the person, so it is filtered by the row-level rules.
+SELECT l.other, l.kind FROM (
+  SELECT DISTINCT (CASE WHEN src = @document_id THEN dst ELSE src END)::uuid AS other, kind
+  FROM graph.edges
+  WHERE (src = @document_id OR dst = @document_id) AND kind IN ('references', 'duplicates') AND status <> 'rejected'
+) l JOIN documents.v_documents d ON d.id = l.other
+ORDER BY l.kind, l.other LIMIT @top;

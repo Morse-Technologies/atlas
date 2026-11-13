@@ -20,3 +20,7 @@ SELECT * FROM audit.events WHERE id < @before ORDER BY id DESC LIMIT @page_size;
 
 -- name: ListEventsOldestFirst :many
 SELECT * FROM audit.events WHERE id > @after ORDER BY id LIMIT @page_size;
+
+-- name: ListEventsBetween :many
+-- The events from a day on (from_at, inclusive) to the end of another (until_at, exclusive), oldest first.
+SELECT * FROM audit.events WHERE id > @after AND at >= @from_at AND at < @until_at ORDER BY id LIMIT @page_size;

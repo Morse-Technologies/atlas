@@ -19,6 +19,13 @@ WHERE v.id = @id;
 -- name: MarkVersionQuarantined :exec
 UPDATE documents.document_versions SET state = 'quarantined' WHERE id = @id;
 
+-- name: MarkVersionRetrying :exec
+-- Only a version still on its way through the pipeline can be retrying; an indexed or replaced one is left as it is.
+UPDATE documents.document_versions SET state = 'retrying' WHERE id = @id AND state IN ('processing', 'parsed');
+
+-- name: ClearVersionRetrying :exec
+UPDATE documents.document_versions SET state = 'processing' WHERE id = @id AND state = 'retrying';
+
 -- name: MarkVersionParsed :exec
 UPDATE documents.document_versions SET state = 'parsed', pages = @pages, parsed_at = now() WHERE id = @id;
 
@@ -67,7 +74,7 @@ ORDER BY d.id LIMIT @page_size;
 SELECT * FROM documents.documents WHERE id = @id AND deleted_at IS NULL;
 
 -- name: ListVersionsOf :many
-SELECT id, document_id, state, pages, created_at, parsed_at FROM documents.document_versions
+SELECT id, document_id, state, pages, mime, created_at, parsed_at, revision FROM documents.document_versions
 WHERE document_id = ANY(@document_ids::uuid[]) ORDER BY created_at, id;
 
 -- name: ListProvenanceOf :many
@@ -85,6 +92,17 @@ INSERT INTO documents.field_provenance (document_id, field, value, source, confi
 VALUES (@document_id, @field, @value, 'manual', 1)
 ON CONFLICT (document_id, field) DO UPDATE SET value = EXCLUDED.value, source = 'manual', confidence = 1, updated_at = now();
 
+-- name: SetVersionRevision :exec
+UPDATE documents.document_versions SET revision = @revision WHERE id = @id;
+
+-- name: SetExtractedProvenance :execrows
+-- A field a person corrected (source "manual") is never replaced: zero rows tell the caller to leave the value alone.
+INSERT INTO documents.field_provenance (document_id, field, value, source, confidence)
+VALUES (@document_id, @field, @value, @source, @confidence)
+ON CONFLICT (document_id, field) DO UPDATE SET value = EXCLUDED.value, source = EXCLUDED.source,
+  confidence = EXCLUDED.confidence, updated_at = now()
+WHERE documents.field_provenance.source <> 'manual';
+
 -- name: GetVersionForViewer :one
 SELECT v.id, v.document_id, v.content_hash, v.mime, d.external_id
 FROM documents.document_versions v JOIN documents.documents d ON d.id = v.document_id
@@ -101,10 +119,11 @@ JOIN documents.documents d ON d.id = v.document_id WHERE v.id = @version_id;
 DELETE FROM documents.chunks WHERE version_id = @version_id;
 
 -- name: InsertChunks :exec
-INSERT INTO documents.chunks (id, version_id, document_id, ord, page, section, context_header, text, codes, tokens, bbox, suspect_injection)
+-- New passages are indexed with the language the organization chose for word search.
+INSERT INTO documents.chunks (id, version_id, document_id, ord, page, section, context_header, text, codes, tokens, bbox, suspect_injection, lang)
 SELECT unnest(@ids::uuid[]), @version_id, @document_id, unnest(@ords::int[]), unnest(@pages::int[]),
        unnest(@sections::text[]), unnest(@headers::text[]), unnest(@texts::text[]), unnest(@codes::text[]),
-       unnest(@token_counts::int[]), unnest(@bboxes::jsonb[]), unnest(@suspects::boolean[]);
+       unnest(@token_counts::int[]), unnest(@bboxes::jsonb[]), unnest(@suspects::boolean[]), documents.tenant_regconfig();
 
 -- name: ListChunksToEmbed :many
 SELECT c.id, c.context_header, c.text FROM documents.chunks c
@@ -150,6 +169,9 @@ WHERE deleted_at IS NULL AND current_version_id IS NOT NULL GROUP BY doc_type;
 -- A parsed version is still being made searchable.
 SELECT count(*)::int FROM documents.document_versions WHERE state IN ('processing', 'parsed');
 
+-- name: CountRetrying :one
+SELECT count(*)::int FROM documents.document_versions WHERE state = 'retrying';
+
 -- name: GetDocumentACLSet :one
 SELECT acl_set_id FROM documents.documents WHERE id = @id;
 
@@ -164,3 +186,42 @@ WHERE c.document_id = d.id AND d.source_id = @source_id;
 UPDATE documents.chunk_embeddings e SET acl_set_id = @acl_set_id FROM documents.chunks c
 JOIN documents.documents d ON d.id = c.document_id
 WHERE e.chunk_id = c.id AND d.source_id = @source_id;
+
+-- name: RetireSourceChunks :exec
+UPDATE documents.chunks c SET is_current = false FROM documents.documents d
+WHERE c.document_id = d.id AND d.source_id = @source_id;
+
+-- name: RetireSourceEmbeddings :exec
+UPDATE documents.chunk_embeddings e SET is_current = false FROM documents.chunks c
+JOIN documents.documents d ON d.id = c.document_id
+WHERE e.chunk_id = c.id AND d.source_id = @source_id;
+
+-- name: MarkSourceDocumentsDeleted :exec
+UPDATE documents.documents SET deleted_at = now(), updated_at = now()
+WHERE source_id = @source_id AND deleted_at IS NULL;
+
+-- name: DeleteBlocksOfDocumentsDeletedBefore :execrows
+DELETE FROM documents.blocks b USING documents.document_versions v, documents.documents d
+WHERE b.version_id = v.id AND v.document_id = d.id AND d.deleted_at < @before;
+
+-- name: DeleteChunksOfDocumentsDeletedBefore :execrows
+-- Vectors go with their chunk (ON DELETE CASCADE).
+DELETE FROM documents.chunks c USING documents.documents d
+WHERE c.document_id = d.id AND d.deleted_at < @before;
+
+-- name: ListLiveContentHashes :many
+-- Every version of a document that is not deleted keeps its original, the superseded ones too.
+SELECT DISTINCT v.content_hash FROM documents.document_versions v
+JOIN documents.documents d ON d.id = v.document_id WHERE d.deleted_at IS NULL;
+
+-- name: GetSearchLanguage :one
+SELECT language FROM documents.search_language;
+
+-- name: SetSearchLanguage :exec
+INSERT INTO documents.search_language (language) VALUES (@language)
+ON CONFLICT (tenant_id) DO UPDATE SET language = EXCLUDED.language, updated_at = now();
+
+-- name: RelabelChunks :execrows
+-- Gives up to batch passages the word-search language of the organization; their word index follows by itself.
+UPDATE documents.chunks SET lang = documents.tenant_regconfig()
+WHERE id IN (SELECT id FROM documents.chunks WHERE lang <> documents.tenant_regconfig() LIMIT @batch);

@@ -14,3 +14,10 @@ WHERE user_id = @user_id AND key = @key;
 
 -- name: ReleaseKey :exec
 DELETE FROM platform.idempotency_keys WHERE user_id = @user_id AND key = @key;
+
+-- name: GetSigningKey :one
+SELECT * FROM platform.signing_keys;
+
+-- name: InsertSigningKey :exec
+INSERT INTO platform.signing_keys (key_id, public_key, private_key_sealed)
+VALUES (@key_id, @public_key, @private_key_sealed) ON CONFLICT (tenant_id) DO NOTHING;

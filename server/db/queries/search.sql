@@ -23,6 +23,10 @@ UPDATE search.conversations SET updated_at = now() WHERE id = @id;
 -- name: GetOwnConversation :one
 SELECT id, user_id, title, updated_at FROM search.conversations WHERE id = @id AND user_id = @user_id;
 
+-- name: GetLastQuestion :one
+SELECT question FROM search.answers WHERE conversation_id = @conversation_id AND user_id = @user_id
+ORDER BY asked_at DESC, id DESC LIMIT 1;
+
 -- name: ListOwnConversations :many
 SELECT id, user_id, title, updated_at,
        COALESCE((SELECT a.outcome FROM search.answers a WHERE a.conversation_id = c.id ORDER BY a.asked_at DESC LIMIT 1), 'answered')::text AS last_outcome
@@ -30,9 +34,9 @@ FROM search.conversations c WHERE c.user_id = @user_id AND c.id < @before ORDER 
 
 -- name: InsertAnswer :exec
 INSERT INTO search.answers (id, conversation_id, user_id, question, asked_at, outcome, text, notes, nearby, latency_ms,
-                            model, scope, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash)
+                            model, scope, prompt_version, embed_model, rerank_model, not_found_threshold, context_hash, rewritten_question)
 VALUES (@id, @conversation_id, @user_id, @question, @asked_at, @outcome, @text, @notes, @nearby, @latency_ms,
-        @model, @scope, @prompt_version, @embed_model, @rerank_model, @not_found_threshold, @context_hash);
+        @model, @scope, @prompt_version, @embed_model, @rerank_model, @not_found_threshold, @context_hash, @rewritten_question);
 
 -- name: InsertCitations :exec
 INSERT INTO search.citations (answer_id, n, document_id, version_id, chunk_id, label, page, section, quote, score, bbox)
@@ -77,3 +81,12 @@ FROM search.answers WHERE asked_at >= @since AND outcome IN ('answered', 'not_fo
 -- name: ListCommonLexemes :many
 -- Words found in at least min_share of the passages, from the planner's statistics.
 SELECT documents.common_lexemes(@min_share::real) AS lexeme;
+
+-- name: DeleteAnswersBefore :execrows
+-- Citations and candidates go with the answer (ON DELETE CASCADE).
+DELETE FROM search.answers WHERE asked_at < @before;
+
+-- name: DeleteEmptyConversationsBefore :execrows
+-- A conversation just opened has no answer yet, so only the ones untouched since the cut-off count.
+DELETE FROM search.conversations c
+WHERE c.updated_at < @before AND NOT EXISTS (SELECT 1 FROM search.answers a WHERE a.conversation_id = c.id);

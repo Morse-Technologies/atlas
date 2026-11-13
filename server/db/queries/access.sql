@@ -12,8 +12,8 @@ SELECT count(*) FROM access.users;
 SELECT pg_advisory_xact_lock(@key::bigint);
 
 -- name: CreateUser :one
-INSERT INTO access.users (name, email, password_hash, totp_secret_enc, hue)
-VALUES (@name, @email, @password_hash, @totp_secret_enc, @hue) RETURNING id;
+INSERT INTO access.users (name, email, password_hash, totp_secret_enc, hue, must_change_password)
+VALUES (@name, @email, @password_hash, @totp_secret_enc, @hue, @must_change_password) RETURNING id;
 
 -- name: AddRole :exec
 INSERT INTO access.user_roles (user_id, role) VALUES (@user_id, @role) ON CONFLICT DO NOTHING;
@@ -26,6 +26,9 @@ SELECT * FROM access.users WHERE id = @id;
 
 -- name: ListUsers :many
 SELECT * FROM access.users WHERE id > @after ORDER BY id LIMIT @page_size;
+
+-- name: ListActivePeopleNames :many
+SELECT id, name FROM access.users WHERE is_active AND id > @after ORDER BY id LIMIT @page_size;
 
 -- name: ListRolesOf :many
 SELECT user_id, role FROM access.user_roles WHERE user_id = ANY(@user_ids::uuid[]) ORDER BY role;
@@ -75,7 +78,10 @@ UPDATE access.sessions SET last_seen_at = @now WHERE id = @id AND last_seen_at <
 DELETE FROM access.sessions WHERE id = @id;
 
 -- name: DeleteExpiredSessions :exec
-DELETE FROM access.sessions WHERE expires_at <= @now;
+DELETE FROM access.sessions WHERE tenant_id = @tenant_id AND expires_at <= @now;
+
+-- name: DeleteExpiredChallenges :exec
+DELETE FROM access.login_challenges WHERE tenant_id = @tenant_id AND expires_at <= @now;
 
 -- name: GetDefaultACLSet :one
 SELECT id FROM access.acl_sets WHERE is_default;
@@ -98,10 +104,19 @@ UPDATE access.tenants SET org_name = @org_name, settings = @settings
 WHERE id = NULLIF(current_setting('atlas.tenant_id', true), '')::uuid;
 
 -- name: SetPasswordHash :execrows
-UPDATE access.users SET password_hash = @password_hash, failed_logins = 0, locked_until = NULL WHERE id = @id;
+UPDATE access.users SET password_hash = @password_hash, failed_logins = 0, locked_until = NULL,
+  must_change_password = false WHERE id = @id;
+
+-- The password was set by an administrator: the person must choose their own at the next sign-in.
+-- name: RequirePasswordChange :exec
+UPDATE access.users SET must_change_password = true WHERE id = @id;
 
 -- name: SetTOTPSecret :execrows
-UPDATE access.users SET totp_secret_enc = @totp_secret_enc WHERE id = @id;
+UPDATE access.users SET totp_secret_enc = @totp_secret_enc, totp_last_step = NULL WHERE id = @id;
+
+-- name: SetTOTPStep :execrows
+-- Takes the step only if it is newer than the last one, so two sign-ins with the same code cannot both pass.
+UPDATE access.users SET totp_last_step = @step::bigint WHERE id = @id AND (totp_last_step IS NULL OR totp_last_step < @step::bigint);
 
 -- name: DeleteSessionsOf :exec
 DELETE FROM access.sessions WHERE user_id = @user_id;

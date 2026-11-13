@@ -7,7 +7,8 @@ info:
     (oapi-codegen) and the TypeScript client. JSON is snake_case on the wire. Errors are RFC 9457 Problem
     Details. Writes that create or change data accept an Idempotency-Key. Lists that grow page with
     `limit` and `cursor`; the next page's cursor comes in the `Next-Cursor` header (absent on the last page). `x-atlas-role` is the minimum role of each operation.
-    Part 1 implements only the health endpoints; every other operation answers 501 until its module lands (docs/C4.md §3).
+    Operations that can be repeated to guess or overload (`login`, `verifyLogin`, `setup`, `ask`, `uploadFiles`) answer 429 past their
+    limit, with a `Retry-After` header in seconds and the wait in `detail`.
 servers:
   - url: /
 security:
@@ -82,7 +83,7 @@ paths:
       operationId: getMe
       x-atlas-role: session
       responses:
-        "200": { description: Current user, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+        "200": { description: Current user, content: { application/json: { schema: { $ref: "#/components/schemas/Me" } } } }
         default: { $ref: "#/components/responses/Problem" }
     delete:
       operationId: deleteMe
@@ -170,6 +171,16 @@ paths:
       responses:
         "200": { description: Document, content: { application/json: { schema: { $ref: "#/components/schemas/Document" } } } }
         default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteDocument
+      description: |
+        Deletes a document that came from an upload: its file leaves the upload folder and the document leaves Atlas
+        (lists, search, map). Documents of a folder source answer 409; remove them from the folder instead.
+      x-atlas-role: editor_metadata
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "204": { description: Deleted }
+        default: { $ref: "#/components/responses/Problem" }
   /api/v1/documents/{id}/related:
     get:
       operationId: listRelated
@@ -198,6 +209,17 @@ paths:
       responses:
         "200": { description: File, content: { application/pdf: { schema: { type: string, format: binary } } } }
         "206": { description: Partial file, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/documents/{id}/versions/{version_id}/original:
+    get:
+      operationId: getVersionOriginal
+      summary: The file as it was read, to download, after the ACL check
+      x-atlas-role: viewer
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: version_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: The original file, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
         default: { $ref: "#/components/responses/Problem" }
 
   /api/v1/catalog:
@@ -258,6 +280,16 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SourcePatch" } } } }
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Source" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: removeSource
+      description: |
+        Stops reading a folder source: its documents leave search, lists, the map and related documents. The
+        folder itself is not touched. The built-in upload source answers 409; delete its documents instead.
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "204": { description: Source removed }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/sources/{id}/sync:
     post:
@@ -348,7 +380,16 @@ paths:
         - { name: to, in: query, required: true, schema: { type: string, format: date } }
         - { name: format, in: query, schema: { type: string, enum: [csv, jsonl], default: csv } }
       responses:
-        "200": { description: File, content: { text/csv: { schema: { type: string } }, application/x-ndjson: { schema: { type: string } } } }
+        "200":
+          description: |
+            The events of the range, oldest first, and a signature of the file. The signature is Ed25519ph over the
+            SHA-512 of the file, base64 in Atlas-Signature, made with the key named in Atlas-Signature-Key-Id; the
+            public key is at /system/signing-key. `atlas audit verify-export` checks a file against it.
+          headers:
+            Atlas-Signature: { required: true, schema: { type: string } }
+            Atlas-Signature-Key-Id: { required: true, schema: { type: string } }
+            Content-Disposition: { required: true, schema: { type: string } }
+          content: { text/csv: { schema: { type: string, format: binary } }, application/x-ndjson: { schema: { type: string, format: binary } } }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/audit/events:
     get:
@@ -366,6 +407,15 @@ paths:
         "200": { description: Chain check, content: { application/json: { schema: { $ref: "#/components/schemas/AuditVerification" } } } }
         default: { $ref: "#/components/responses/Problem" }
 
+  /api/v1/people:
+    get:
+      operationId: listPeople
+      description: Active people of the organization by name, for showing who owns or did something and for choosing an owner or an assignee. No e-mail, no roles. Any signed-in person may read it.
+      x-atlas-role: session
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: People, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PersonName" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /api/v1/users:
     get:
       operationId: listUsers
@@ -373,6 +423,17 @@ paths:
       parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
       responses:
         "200": { description: Users, headers: { Next-Cursor: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Person" } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createUser
+      description: |
+        Creates an account with a random one-time password and, when asked or when a role requires it, a second
+        factor. The secrets are in this answer only. There is no Idempotency-Key: an answer with secrets is never
+        stored for replay, and a retry with the same e-mail answers 409. The person must change the password at the first sign-in.
+      x-atlas-role: admin
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/UserCreate" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/UserCreated" } } } }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/users/{id}:
     delete:
@@ -392,6 +453,28 @@ paths:
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
         default: { $ref: "#/components/responses/Problem" }
+  /api/v1/users/{id}/password-reset:
+    post:
+      operationId: resetUserPassword
+      description: |
+        Gives the account a new one-time password, ends its sessions and makes the person choose their own at the
+        next sign-in. The password is in this answer only, so there is no Idempotency-Key (the answer is never replayed).
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: New one-time password, content: { application/json: { schema: { $ref: "#/components/schemas/PasswordReset" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/users/{id}/totp-reset:
+    post:
+      operationId: resetUserTotp
+      description: |
+        Gives the account a new second factor (for a lost phone) and ends its sessions. The authenticator link is in
+        this answer only, so there is no Idempotency-Key.
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: New authenticator link, content: { application/json: { schema: { $ref: "#/components/schemas/TotpReset" } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -407,12 +490,32 @@ paths:
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
         default: { $ref: "#/components/responses/Problem" }
+  /api/v1/system/signing-key:
+    get:
+      operationId: getSigningKey
+      summary: The public key that checks the signature of exported audit reports
+      x-atlas-role: auditor
+      responses:
+        "200": { description: Public key, content: { application/json: { schema: { $ref: "#/components/schemas/SigningKey" } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /api/v1/system/license:
     get:
       operationId: getLicense
       x-atlas-role: session
       responses:
         "200": { description: License, content: { application/json: { schema: { $ref: "#/components/schemas/License" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: installLicense
+      description: |
+        Installs a license file. It is checked against the key built into this installation; a file that is not
+        valid, was changed, was issued for another installation or has expired answers 422 with the reason in
+        `detail`, and the license in force stays as it was.
+      x-atlas-role: admin
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/LicenseInstall" } } } }
+      responses:
+        "200": { description: The license now in force, content: { application/json: { schema: { $ref: "#/components/schemas/License" } } } }
         default: { $ref: "#/components/responses/Problem" }
 
 components:
@@ -452,6 +555,10 @@ components:
       properties:
         status: { type: string, enum: [ok, degraded] }
         checks: { type: object, additionalProperties: { type: string, description: "ok or the error" } }
+        answer_mode:
+          type: string
+          enum: [generated, passages, keyword]
+          description: "What a question gets with the models installed. A degraded mode does not make the installation not ready."
     Version:
       type: object
       required: [version, schema]
@@ -540,16 +647,60 @@ components:
     Role: { type: string, enum: [viewer, editor_metadata, curator, organizer_approver, admin, auditor] }
     Person:
       type: object
-      required: [id, name, email, department, roles, is_active, last_active_at, hue]
+      required: [id, name, email, department, roles, is_active, last_active_at, hue, must_change_password]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         email: { type: string }
+        must_change_password: { type: boolean, description: "The password was set by someone else; only changing it is allowed until then" }
         department: { type: string }
         roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
         is_active: { type: boolean }
         last_active_at: { type: [string, "null"], format: date-time }
         hue: { type: integer }
+    PersonName:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+    UserCreate:
+      type: object
+      required: [name, email, roles, second_factor]
+      properties:
+        name: { type: string }
+        email: { type: string }
+        roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
+        second_factor: { type: boolean, description: "Required (true) when a role is admin, auditor or curator" }
+    UserCreated:
+      type: object
+      required: [person, password, totp_uri]
+      properties:
+        person: { $ref: "#/components/schemas/Person" }
+        password: { type: string, description: "One-time password, shown once" }
+        totp_uri: { type: [string, "null"], description: "Authenticator-app link, shown once; null without a second factor" }
+    LicenseInstall:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, maxLength: 65536, description: "The text of the license file" }
+    SigningKey:
+      type: object
+      required: [key_id, public_key, algorithm]
+      properties:
+        key_id: { type: string }
+        public_key: { type: string, description: "base64 of the 32-byte Ed25519 public key" }
+        algorithm: { type: string, enum: [ed25519ph-sha512] }
+    PasswordReset:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string, description: "One-time password, shown once" }
+    TotpReset:
+      type: object
+      required: [totp_uri]
+      properties:
+        totp_uri: { type: string, description: "Authenticator-app link, shown once" }
     RolesUpdate:
       type: object
       required: [roles]
@@ -569,13 +720,14 @@ components:
       properties: { x: { type: number }, y: { type: number }, w: { type: number }, h: { type: number } }
     DocumentVersion:
       type: object
-      required: [id, revision, state, indexed_at, pages]
+      required: [id, revision, state, indexed_at, pages, preview]
       properties:
         id: { type: string, format: uuid }
         revision: { type: string }
-        state: { type: string, enum: [indexed, superseded, processing, quarantined] }
+        state: { type: string, enum: [indexed, superseded, processing, retrying, quarantined] }
         indexed_at: { type: string, format: date-time }
         pages: { type: integer }
+        preview: { type: boolean, description: "True when the viewer can show this version (a PDF, or a format rendered to PDF)" }
     FieldProvenance:
       type: object
       required: [field, value, source, confidence]
@@ -587,9 +739,10 @@ components:
     Document:
       type: object
       required: [id, code, title, doc_type, band, status, department, entities, attributes, owner_id, approved_at,
-                 review_due_at, source_id, path, language, current_version_id, versions, provenance, summary]
+                 review_due_at, source_id, source_kind, path, language, current_version_id, versions, provenance, summary]
       properties:
         id: { type: string, format: uuid }
+        source_kind: { type: string, enum: [folder, upload], description: "Where the document came from; only uploads can be deleted" }
         code: { type: string }
         title: { type: string }
         doc_type: { type: string, description: "key in the tenant's document-type taxonomy" }
@@ -717,6 +870,13 @@ components:
         title: { type: string }
         updated_at: { type: string, format: date-time }
         answer_ids: { type: array, items: { type: string, format: uuid } }
+    Me:
+      allOf:
+        - $ref: "#/components/schemas/Person"
+        - type: object
+          required: [org_name]
+          properties:
+            org_name: { type: string, description: "Name of the person's organization, as set in Settings" }
     ConversationSummary:
       allOf:
         - $ref: "#/components/schemas/Conversation"
@@ -776,7 +936,7 @@ components:
         id: { type: string, format: uuid }
         source_id: { type: string, format: uuid }
         path: { type: string }
-        reason: { type: string, enum: [encrypted, corrupt, unsupported, too_large, hostile] }
+        reason: { type: string, enum: [encrypted, corrupt, unsupported, too_large, hostile, retries_exhausted] }
         detail: { type: string }
         at: { type: string, format: date-time }
 
@@ -872,7 +1032,7 @@ components:
     Settings:
       type: object
       required: [org_name, chat_model, embed_model, rerank_model, network_isolated, require_citation,
-                 warn_contradictions, not_found_threshold, answer_language, retention_days]
+                 warn_contradictions, not_found_threshold, answer_language, search_language, retention_days, answer_mode, answer_gaps]
       properties:
         org_name: { type: string }
         chat_model: { type: string }
@@ -883,13 +1043,26 @@ components:
         warn_contradictions: { type: boolean }
         not_found_threshold: { type: number, minimum: 0, maximum: 1 }
         answer_language: { type: string, enum: [user, es, en] }
+        search_language:
+          type: string
+          enum: [es, en, none]
+          description: "Language of the word search: stems and no accents (es, en), or no stems but no accents either (none)."
         retention_days: { type: integer }
+        answer_mode:
+          type: string
+          enum: [generated, passages, keyword]
+          description: "Read-only (SettingsPatch cannot change it). generated: written answers with citations. passages: no model writes, the best passages are listed, found by words and meaning. keyword: passages found by words only."
+        answer_gaps:
+          type: array
+          items: { type: string }
+          description: "Read-only. Why the mode is not better: one fixed sentence per missing or mismatched model."
     SettingsPatch:
       type: object
       properties:
         org_name: { type: string }
         not_found_threshold: { type: number, minimum: 0, maximum: 1 }
         answer_language: { type: string, enum: [user, es, en] }
+        search_language: { type: string, enum: [es, en, none] }
         retention_days: { type: integer }
         require_citation: { type: boolean }
         warn_contradictions: { type: boolean }
@@ -905,7 +1078,7 @@ components:
           items: { type: string, enum: [alerts, map, sso, inherited_acl, audit_reports, sharepoint, erp] }
     Overview:
       type: object
-      required: [today, week, top_topics, documents, open_alerts, finding]
+      required: [today, week, documents, open_alerts, finding]
       properties:
         today:
           type: object
@@ -921,19 +1094,14 @@ components:
             type: object
             required: [day, questions, not_found]
             properties: { day: { type: string, format: date }, questions: { type: integer }, not_found: { type: integer } }
-        top_topics:
-          type: array
-          items:
-            type: object
-            required: [topic, count]
-            properties: { topic: { type: string }, count: { type: integer } }
         documents:
           type: object
-          required: [indexed, by_band, processing, quarantined]
+          required: [indexed, by_band, processing, retrying, quarantined]
           properties:
             indexed: { type: integer }
             by_band: { type: object, additionalProperties: { type: integer } }
             processing: { type: integer }
+            retrying: { type: integer, description: "Versions whose last step failed and will be tried again." }
             quarantined: { type: integer }
         open_alerts:
           type: object
