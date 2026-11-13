@@ -23,6 +23,9 @@ const (
 	ReasonUnsupported Reason = "unsupported"
 	ReasonTooLarge    Reason = "too_large"
 	ReasonHostile     Reason = "hostile"
+	// ReasonRetriesExhausted is a file whose step kept failing for a cause that might pass (a model that was down)
+	// until River gave up.
+	ReasonRetriesExhausted Reason = "retries_exhausted"
 )
 
 // Transient marks a failure worth retrying: timeouts, 429, 503, a service that is down.
@@ -85,4 +88,26 @@ func PermanentReason(err error) Reason {
 		return permanent.Reason
 	}
 	return ReasonCorrupt
+}
+
+// Public is an error with a reason that is safe to show to the person who caused it: the module writes it, from a
+// fixed list, and never from internal text. The HTTP layer sends it as the detail of the problem.
+type Public struct {
+	Err    error
+	Detail string
+}
+
+func (e *Public) Error() string { return e.Err.Error() }
+func (e *Public) Unwrap() error { return e.Err }
+
+// WithPublicDetail attaches a reason that may be shown to the caller. The error keeps its class.
+func WithPublicDetail(err error, detail string) error { return &Public{Err: err, Detail: detail} }
+
+// PublicDetail returns the reason attached by WithPublicDetail, or "" if there is none.
+func PublicDetail(err error) string {
+	var public *Public
+	if errors.As(err, &public) {
+		return public.Detail
+	}
+	return ""
 }

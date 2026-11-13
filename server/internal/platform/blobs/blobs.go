@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -105,6 +106,54 @@ func (s *Store) HasDerived(key DerivedKey) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// BlobInfo is a stored original: its content hash and when it was last written.
+type BlobInfo struct {
+	Hash    string
+	ModTime time.Time
+}
+
+// ListBlobs lists the originals of a tenant. A tenant with none gives an empty list.
+func (s *Store) ListBlobs(tenantID uuid.UUID) ([]BlobInfo, error) {
+	files, err := filepath.Glob(filepath.Join(s.root, blobsDirName, tenantID.String(), "*", "*"))
+	if err != nil {
+		return nil, fmt.Errorf("list blobs: %w", err)
+	}
+	out := make([]BlobInfo, 0, len(files))
+	for _, file := range files {
+		info, statErr := os.Stat(file)
+		if errors.Is(statErr, fs.ErrNotExist) { // removed since the listing
+			continue
+		}
+		if statErr != nil {
+			return nil, fmt.Errorf("list blobs: %w", statErr)
+		}
+		out = append(out, BlobInfo{Hash: filepath.Base(file), ModTime: info.ModTime()})
+	}
+	return out, nil
+}
+
+// RemoveBlob deletes a tenant's original. Removing one that is already gone is not an error.
+func (s *Store) RemoveBlob(tenantID uuid.UUID, hash string) error {
+	return removeIfPresent(s.BlobPath(tenantID, hash))
+}
+
+// RemoveDerived deletes every artifact made from the blob, all stages and versions.
+// shortcut: artifacts are keyed by content hash alone, so the same content in two tenants shares them; remove
+// them only once no tenant keeps the original, or when tenants stop sharing a volume.
+func (s *Store) RemoveDerived(hash string) error {
+	if err := os.RemoveAll(filepath.Join(s.root, derivedDirName, hash)); err != nil {
+		return fmt.Errorf("remove derived: %w", err)
+	}
+	return nil
+}
+
+func removeIfPresent(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove blob: %w", err)
+	}
+	return nil
 }
 
 // CheckWritable is the readiness probe for the blob volume.

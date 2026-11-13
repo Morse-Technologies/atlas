@@ -39,6 +39,12 @@ func New(baseURL string) *Client {
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: requestTimeout}}
 }
 
+// Measured labels the calls of this client in the metrics ("embed" or "rerank"): one TEI client serves both.
+func (c *Client) Measured(model string) *Client {
+	c.http.Transport = models.Measured(model, nil)
+	return c
+}
+
 // WithTimeout sets the per-call limit. The default suits a GPU; a trial on an emulated CPU needs more.
 func (c *Client) WithTimeout(d time.Duration) *Client {
 	c.http.Timeout = d

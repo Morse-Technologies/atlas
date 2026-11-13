@@ -70,3 +70,24 @@ func TestAKeyIsPerPerson(t *testing.T) {
 		t.Fatalf("another person's Begin = %v, %v; keys must not collide across people", replay, err)
 	}
 }
+
+func TestPurgeOldForgetsKeysOlderThanADay(t *testing.T) {
+	ctx := context.Background()
+	store, req := newStore(t)
+	_, _ = store.Begin(ctx, req)
+	other := req
+	other.Hash = "h2"
+
+	if err := store.PurgeOld(ctx, req.Tenant, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(ctx, other); !errors.Is(err, idempotency.ErrKeyReused) {
+		t.Fatalf("a key from today must be kept: Begin = %v, want ErrKeyReused", err)
+	}
+	if err := store.PurgeOld(ctx, req.Tenant, time.Now().Add(25*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := store.Begin(ctx, other); replay != nil || err != nil {
+		t.Fatalf("after a day the key is forgotten: Begin = %v, %v; want to proceed", replay, err)
+	}
+}

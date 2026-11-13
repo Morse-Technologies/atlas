@@ -15,8 +15,9 @@ import (
 const (
 	embedPath  = "/api/embed"
 	healthPath = "/api/tags"
-	// requestTimeout is long because a CPU loads the model on the first call.
-	requestTimeout = 60 * time.Second
+	// requestTimeout is the same as TEI. A CPU-only trial loads the model on the first call and needs more:
+	// raise ATLAS_EMBED_TIMEOUT.
+	requestTimeout = 5 * time.Second
 	// batchSize keeps one request small for a CPU.
 	batchSize = 16
 )
@@ -30,7 +31,13 @@ type Client struct {
 
 // New returns a client for the model served at baseURL.
 func New(baseURL, model string) *Client {
-	return &Client{baseURL: baseURL, model: model, http: &http.Client{Timeout: requestTimeout}}
+	return &Client{baseURL: baseURL, model: model, http: &http.Client{Timeout: requestTimeout, Transport: models.Measured("embed", nil)}}
+}
+
+// WithTimeout sets the per-call limit. The default already allows a CPU to load the model.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	c.http.Timeout = d
+	return c
 }
 
 // Health reports whether the server answers.

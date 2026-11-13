@@ -25,7 +25,7 @@ type Client struct {
 
 // New returns a client. Per-call deadlines come from the context (the job timeout).
 func New(baseURL string) *Client {
-	return &Client{baseURL: baseURL, http: &http.Client{}}
+	return &Client{baseURL: baseURL, http: &http.Client{Transport: models.Measured("gotenberg", nil)}}
 }
 
 // OfficeToPDF converts file and streams the PDF into dst.

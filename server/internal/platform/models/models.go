@@ -12,9 +12,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/morse/atlas/server/internal/platform/errs"
+	"github.com/morse/atlas/server/internal/platform/metrics"
 )
+
+const modelRequestSeconds = "atlas_model_request_seconds"
 
 // File is a local file sent to a service. Name carries the extension services use to pick a converter.
 type File struct {
@@ -157,4 +161,25 @@ func OpenJSON(ctx context.Context, ep Endpoint, in any) (*http.Response, error) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return Do(ep.Client, req)
+}
+
+// Measured times every call of a model service under the label model. It measures until the response headers
+// arrive, so a streamed answer is timed to its first byte. Calls that fail to connect count too.
+func Measured(model string, next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return measuredTransport{model: model, next: next}
+}
+
+type measuredTransport struct {
+	model string
+	next  http.RoundTripper
+}
+
+func (m measuredTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := m.next.RoundTrip(req)
+	metrics.Default.Observe(modelRequestSeconds, metrics.Labels{"model": m.model}, time.Since(start))
+	return resp, err
 }

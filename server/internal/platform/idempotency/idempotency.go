@@ -81,6 +81,16 @@ func (s *Store) claim(ctx context.Context, tx pgx.Tx, r Request) (*Outcome, erro
 	return replay, err
 }
 
+// PurgeOld forgets the keys older than keepFor, which no client can still be retrying.
+func (s *Store) PurgeOld(ctx context.Context, tenant uuid.UUID, now time.Time) error {
+	return s.DB.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		if err := platformdb.New(tx).PurgeOldKeys(ctx, now.Add(-keepFor)); err != nil {
+			return fmt.Errorf("purge idempotency keys: %w", err)
+		}
+		return nil
+	})
+}
+
 // errStale marks a key whose first request never finished.
 var errStale = errors.New("stale idempotency key")
 

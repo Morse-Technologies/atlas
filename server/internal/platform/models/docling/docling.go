@@ -34,7 +34,7 @@ type Client struct {
 
 // New returns a client. The overall deadline is the job timeout carried by the context.
 func New(baseURL string) *Client {
-	return &Client{baseURL: baseURL, http: &http.Client{}}
+	return &Client{baseURL: baseURL, http: &http.Client{Transport: models.Measured("docling", nil)}}
 }
 
 // convertOptions asks for the DoclingDocument JSON only, with OCR on pages without a text layer.

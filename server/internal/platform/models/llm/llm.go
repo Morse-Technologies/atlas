@@ -32,7 +32,7 @@ type Client struct {
 
 // New returns a client. baseURL includes the version path, for example http://llm:8000/v1.
 func New(baseURL, model string) *Client {
-	return &Client{baseURL: baseURL, model: model, http: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: connectTimeout}}}
+	return &Client{baseURL: baseURL, model: model, http: &http.Client{Transport: models.Measured("llm", &http.Transport{ResponseHeaderTimeout: connectTimeout})}}
 }
 
 // Model is the name sent to the server and stored with every answer.

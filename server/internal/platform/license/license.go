@@ -70,16 +70,54 @@ type payload struct {
 // ErrInvalid is returned for a file that is malformed, unsigned or signed with another key.
 var ErrInvalid = errors.New(errInvalidLicenseMsg)
 
+// Reason is why a license file was refused. The set is fixed, so each reason can be shown to the person who
+// uploaded the file without leaking anything from the file or the server.
+type Reason string
+
+// Reasons a license is refused.
+const (
+	ReasonFormat    Reason = "format"
+	ReasonSignature Reason = "signature"
+	ReasonExpired   Reason = "expired"
+)
+
+// reasonText is what the person is told for each Reason.
+var reasonText = map[Reason]string{
+	ReasonFormat:    "The file is not a license file.",
+	ReasonSignature: "The signature does not match this installation: the file was changed or was issued for another one.",
+	ReasonExpired:   "The license has expired.",
+}
+
+// Rejected is a license file that was refused, and why. It is an ErrInvalid.
+type Rejected struct{ Reason Reason }
+
+func (r *Rejected) Error() string { return errInvalidLicenseMsg + ": " + string(r.Reason) }
+
+// Is makes every refusal an ErrInvalid.
+func (r *Rejected) Is(target error) bool { return target == ErrInvalid }
+
+// ReasonOf returns why err refused a license, or "" if it is not a refusal.
+func ReasonOf(err error) Reason {
+	var rejected *Rejected
+	if errors.As(err, &rejected) {
+		return rejected.Reason
+	}
+	return ""
+}
+
 // Parse checks the signature and returns the license. After valid_until the plan stays Pro but no feature is
 // on: people see that it expired and what to renew, and nothing Pro keeps working.
 func Parse(raw []byte, key ed25519.PublicKey, now time.Time) (License, error) {
 	var f file
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return License{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return License{}, &Rejected{Reason: ReasonFormat}
 	}
 	body, sig, err := decode(f)
-	if err != nil || len(key) != publicKeyBytes || !ed25519.Verify(key, body, sig) {
-		return License{}, ErrInvalid
+	if err != nil {
+		return License{}, &Rejected{Reason: ReasonFormat}
+	}
+	if len(key) != publicKeyBytes || !ed25519.Verify(key, body, sig) {
+		return License{}, &Rejected{Reason: ReasonSignature}
 	}
 	return fromPayload(body, now)
 }
@@ -95,14 +133,14 @@ func decode(f file) (body, sig []byte, err error) {
 func fromPayload(body []byte, now time.Time) (License, error) {
 	var p payload
 	if err := json.Unmarshal(body, &p); err != nil {
-		return License{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return License{}, &Rejected{Reason: ReasonFormat}
 	}
 	until, err := time.Parse(dateLayout, p.ValidUntil)
 	if err != nil || p.Plan != PlanPro {
-		return License{}, ErrInvalid
+		return License{}, &Rejected{Reason: ReasonFormat}
 	}
 	lic := License{Plan: PlanPro, Organization: p.Organization, ValidUntil: until, Features: p.Features}
-	if lic.Features == nil || now.After(until.AddDate(0, 0, 1)) {
+	if lic.Features == nil || hasRunOut(until, now) {
 		lic.Features = []string{}
 	}
 	return lic, nil
@@ -157,9 +195,12 @@ func (h *Holder) refresh() {
 	h.current, h.loaded = lic, info.ModTime()
 }
 
+// hasRunOut says whether the last day of a license is behind now (valid_until counts as a whole day).
+func hasRunOut(validUntil, now time.Time) bool { return now.After(validUntil.AddDate(0, 0, 1)) }
+
 // withExpiry switches features off once the license has run out, even if the file was read before.
 func (h *Holder) withExpiry(l License) License {
-	if l.Plan == PlanPro && h.Now().After(l.ValidUntil.AddDate(0, 0, 1)) {
+	if l.Plan == PlanPro && hasRunOut(l.ValidUntil, h.Now()) {
 		l.Features = []string{}
 	}
 	return l

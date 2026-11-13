@@ -30,13 +30,16 @@ const (
 	appPassword   = "atlas-test"
 )
 
-// Start runs a migrated Postgres for this test and returns a connection as the app role.
+// Start runs a migrated Postgres for this test (see envDatabaseURL and envSkipMigrate) and returns a connection
+// as the app role.
 func Start(t *testing.T) *db.DB {
 	t.Helper()
 	ctx := context.Background()
-	ownerURL := startPostgres(t)
-	if err := schema.Migrate(ctx, ownerURL); err != nil {
-		t.Fatal(err)
+	ownerURL := ownerDatabase(t)
+	if !skipMigrate() {
+		if err := schema.Migrate(ctx, ownerURL); err != nil {
+			t.Fatal(err)
+		}
 	}
 	d, err := db.Connect(ctx, enableAppLogin(t, ownerURL))
 	if err != nil {

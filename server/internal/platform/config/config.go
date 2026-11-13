@@ -40,6 +40,11 @@ type HTTP struct {
 	Addr string `env:"ATLAS_HTTP_ADDR" envDefault:":8080"`
 }
 
+// Metrics is the listener of the Prometheus text metrics. It is not published outside the Compose network.
+type Metrics struct {
+	Addr string `env:"ATLAS_METRICS_ADDR" envDefault:":9090"`
+}
+
 // Sources lists the folders an administrator may register as sources (ATLAS_SOURCE_ROOTS, comma separated).
 type Sources struct {
 	Roots []string `env:"ATLAS_SOURCE_ROOTS" envSeparator:"," envDefault:"/sources"`
@@ -51,6 +56,9 @@ type Embedding struct {
 	Model string `env:"ATLAS_EMBED_MODEL" envDefault:"bge-m3"`
 	// API is the kind of server at URL: tei (default) or ollama, the light option for trials.
 	API string `env:"ATLAS_EMBED_API" envDefault:"tei"`
+	// Timeout is how long one embedding call may take. Zero keeps the clients' own limit, 5 s. Raise it for slow
+	// CPUs: a CPU-only Ollama trial loads the model on the first call.
+	Timeout time.Duration `env:"ATLAS_EMBED_TIMEOUT"`
 }
 
 // Answering holds the services that rank and write answers. Each may be empty: search then degrades
@@ -79,11 +87,10 @@ type Network struct {
 	Isolated bool `env:"ATLAS_NETWORK_ISOLATED" envDefault:"true"`
 }
 
-// License locates the signed license file and the public key that checks it (base64, 32 bytes). Both may be empty:
-// the installation then runs as Core.
+// License says where the installed license file is kept. Empty: the file lives in the blob volume, which the API
+// and the worker share (see app.newLicenses). The key that checks it is built into the binary (platform/license).
 type License struct {
-	File      string `env:"ATLAS_LICENSE_FILE"`
-	PublicKey string `env:"ATLAS_LICENSE_PUBLIC_KEY"`
+	File string `env:"ATLAS_LICENSE_FILE"`
 }
 
 // Log sets the slog level: debug, info, warn or error.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func server(t *testing.T, handler http.HandlerFunc) *Client {
@@ -32,6 +33,12 @@ func echoVectors(t *testing.T, calls *int) http.HandlerFunc {
 			out[i] = []float32{1}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": out})
+	}
+}
+
+func TestTheDefaultTimeoutIsFiveSeconds(t *testing.T) {
+	if got := New("http://ollama.invalid", "m").http.Timeout; got != 5*time.Second {
+		t.Fatalf("timeout %v", got)
 	}
 }
 

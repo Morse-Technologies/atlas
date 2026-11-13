@@ -85,6 +85,39 @@ func (q *Queries) GetKey(ctx context.Context, arg GetKeyParams) (GetKeyRow, erro
 	return i, err
 }
 
+const getSigningKey = `-- name: GetSigningKey :one
+SELECT tenant_id, key_id, public_key, private_key_sealed, created_at FROM platform.signing_keys
+`
+
+func (q *Queries) GetSigningKey(ctx context.Context) (PlatformSigningKey, error) {
+	row := q.db.QueryRow(ctx, getSigningKey)
+	var i PlatformSigningKey
+	err := row.Scan(
+		&i.TenantID,
+		&i.KeyID,
+		&i.PublicKey,
+		&i.PrivateKeySealed,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertSigningKey = `-- name: InsertSigningKey :exec
+INSERT INTO platform.signing_keys (key_id, public_key, private_key_sealed)
+VALUES ($1, $2, $3) ON CONFLICT (tenant_id) DO NOTHING
+`
+
+type InsertSigningKeyParams struct {
+	KeyID            string
+	PublicKey        []byte
+	PrivateKeySealed []byte
+}
+
+func (q *Queries) InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error {
+	_, err := q.db.Exec(ctx, insertSigningKey, arg.KeyID, arg.PublicKey, arg.PrivateKeySealed)
+	return err
+}
+
 const purgeOldKeys = `-- name: PurgeOldKeys :exec
 DELETE FROM platform.idempotency_keys WHERE created_at < $1
 `
