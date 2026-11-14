@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="app/public/atlas-icon.svg" alt="Atlas icon" width="120">
-
 # Atlas
 
 ### Document Assistant for Any Organization
