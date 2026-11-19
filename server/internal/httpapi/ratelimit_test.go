@@ -172,3 +172,27 @@ func TestRateLimitOtherErrorsCarryNoRetryAfter(t *testing.T) {
 		t.Fatal("Retry-After belongs to 429 only")
 	}
 }
+
+func TestRateLimitBothSignInStepsAreCountedPerClientAddress(t *testing.T) {
+	for _, operation := range []string{"Login", "VerifyLogin"} {
+		l, _ := newTestLimiter()
+		reached := 0
+		call := l.middleware()(reachedHandler(&reached), operation)
+		attacker := requestFrom("203.0.113.7")
+		for range attemptsPerWindow {
+			_, _ = call(context.Background(), nil, attacker, nil)
+		}
+		if _, err := call(context.Background(), nil, attacker, nil); !isTooManyRequests(err) {
+			t.Errorf("%s: the address past the limit was not refused: %v", operation, err)
+		}
+		if _, err := call(context.Background(), nil, requestFrom("203.0.113.8"), nil); err != nil {
+			t.Errorf("%s: another address must have its own count: %v", operation, err)
+		}
+	}
+}
+
+func requestFrom(address string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	r.Header.Set("X-Forwarded-For", address)
+	return r
+}

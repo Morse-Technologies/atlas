@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/morse/atlas/server/internal/access"
 	"github.com/morse/atlas/server/internal/audit"
 	"github.com/morse/atlas/server/internal/platform/signing"
 )
@@ -49,5 +50,40 @@ func TestExportOfABackwardsRangeIsRefused(t *testing.T) {
 	req.Header.Set("Cookie", sessionCookie+"=auditor")
 	if res := serveTo(t, &Server{Accounts: people, Licenses: allFeatures}, req); res.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status %d, want 422", res.Code)
+	}
+}
+
+type verifyingAudit struct{ AuditLog }
+
+func (verifyingAudit) Verify(context.Context, uuid.UUID) (audit.Verification, error) {
+	broken := int64(7)
+	return audit.Verification{OK: false, Checked: 12, BrokenAt: &broken}, nil
+}
+
+func TestVerifyAuditSaysWhereTheChainBreaks(t *testing.T) {
+	server := &Server{Audit: verifyingAudit{}}
+
+	res, err := server.VerifyAudit(personContextOf(access.Principal{}), VerifyAuditRequestObject{})
+
+	body := res.(VerifyAudit200JSONResponse)
+	if err != nil || body.Ok || body.Checked != 12 || *body.BrokenAt != 7 {
+		t.Fatalf("body=%+v err=%v", body, err)
+	}
+}
+
+type publishedKey struct{ SigningKeys }
+
+func (publishedKey) PublicKey(context.Context, uuid.UUID) (signing.PublicKey, error) {
+	return signing.PublicKey{ID: "key-1", Key: []byte("public")}, nil
+}
+
+func TestGetSigningKeyPublishesTheKeyInBase64(t *testing.T) {
+	server := &Server{Signing: publishedKey{}}
+
+	res, err := server.GetSigningKey(personContextOf(access.Principal{}), GetSigningKeyRequestObject{})
+
+	body := res.(GetSigningKey200JSONResponse)
+	if err != nil || body.KeyId != "key-1" || body.PublicKey != base64.StdEncoding.EncodeToString([]byte("public")) {
+		t.Fatalf("body=%+v err=%v", body, err)
 	}
 }
