@@ -100,7 +100,7 @@ const provenanceFor = (s: DocSeed): FieldProvenance[] => {
   return rows;
 };
 
-/* The demo tenant runs a Viper-style pack: machines are a pack entity type; standards are a Core one. */
+/* The demo tenant runs the `industrial` domain pack: machines are a pack entity type; standards are a Core one. */
 const MACHINE = "machine";
 const machineRef = (label: string): EntityRef => ({ type: MACHINE, label });
 
