@@ -25,7 +25,7 @@ async function addPerson(page: Page, person: NewPerson) {
   const created = await page.request.post("/api/v1/users", { data });
   expect(created.status()).toBe(201);
   const body = (await created.json()) as { person: { id: string }; password: string; totp_uri: string | null };
-  return { password: body.password, secret: body.totp_uri ? (new URL(body.totp_uri).searchParams.get("secret") ?? "") : "" };
+  return { id: body.person.id, password: body.password, secret: body.totp_uri ? (new URL(body.totp_uri).searchParams.get("secret") ?? "") : "" };
 }
 
 /** Signs a new person in with a client of their own and has them choose a password, as their first sign-in demands. */
@@ -600,6 +600,43 @@ test.describe.serial("Atlas in a browser, from first setup to a cited answer", (
     await expect(own.getByText("Acme", { exact: true }).first()).toBeVisible();
     expect(refused).toEqual([]);
     await Promise.all([context.close(), jo.dispose()]);
+  });
+
+  test("what the administrator changes for a reader shows after a reload, and deleting them ends their session", async ({ browser, baseURL }) => {
+    const MEI: NewPerson = { name: "Mei Reader", email: "mei@acme.test", roles: ["viewer"], secondFactor: false };
+    const account = await addPerson(page, MEI);
+    const mei = await signInAsNew(baseURL, MEI, account);
+    const reader = await (await openAs(browser, baseURL, mei)).newPage();
+    const sources = reader.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Sources", exact: true });
+
+    await reader.goto("/documents");
+    await expect(reader.getByText("PNT-014-rev3").first()).toBeVisible();
+    await expect(sources).toHaveCount(0);
+
+    // Role: an editor gets the Sources screen.
+    const roles = await page.request.patch(`/api/v1/users/${account.id}/roles`, { data: { roles: ["editor_metadata"] } });
+    expect(roles.ok()).toBe(true);
+    await reader.reload();
+    await expect(sources).toBeVisible();
+
+    // Source access: restricted to the administrator, the reader loses the documents; opened again, they return.
+    const docs = (await (await page.request.get("/api/v1/documents?limit=200")).json()) as { path: string; source_id: string }[];
+    const sourceId = docs.find((d) => d.path.endsWith("PNT-014-rev3.pdf"))?.source_id;
+    const me = (await (await page.request.get("/api/v1/me")).json()) as { id: string };
+    const restrict = (data: object) => page.request.patch(`/api/v1/sources/${sourceId}`, { data });
+    expect((await restrict({ access: "restricted", readers: [me.id] })).ok()).toBe(true);
+    await reader.reload();
+    await expect(reader.getByText("PNT-014-rev3")).toHaveCount(0);
+    expect((await restrict({ access: "everyone" })).ok()).toBe(true);
+    await reader.reload();
+    await expect(reader.getByText("PNT-014-rev3").first()).toBeVisible();
+
+    // Deleting the person ends their session at once.
+    expect((await page.request.delete(`/api/v1/users/${account.id}`)).status()).toBe(204);
+    await reader.reload();
+    await expect(reader).toHaveURL(/\/login/);
+    expect((await mei.get("/api/v1/me")).status()).toBe(401);
+    await Promise.all([reader.context().close(), mei.dispose()]);
   });
 
   test("a password is changed from the account menu and the old one stops working", async () => {
