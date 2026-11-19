@@ -7,15 +7,19 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/morse/atlas/server/internal/platform/schema"
 )
 
 const (
 	// envDatabaseURL is the owner URL of a Postgres that already holds a migrated database. Each test works on a
-	// private copy of it, so tests stay independent. Without it every test starts its own container.
+	// private copy of it, so tests stay independent. Without it the tests of a package share one container of their
+	// own (see sharedTemplateURL).
 	envDatabaseURL = "ATLAS_TEST_DATABASE_URL"
 	// envSkipMigrate set to 1 leaves the schema as it is. The migration check needs it: the database was migrated by
 	// a newer version than the code under test, which must not try to bring the schema back to its own version.
@@ -34,7 +38,31 @@ func ownerDatabase(t *testing.T) string {
 	if templateURL := os.Getenv(envDatabaseURL); templateURL != "" {
 		return cloneDatabase(t, templateURL)
 	}
-	return startPostgres(t)
+	return cloneDatabase(t, sharedTemplateURL(t))
+}
+
+// sharedTemplate is the migrated Postgres that every test of one test binary copies. Starting a container per
+// test made the integration suite take minutes. Ryuk (testcontainers) removes the container when the binary ends.
+var sharedTemplate struct {
+	once sync.Once
+	url  string
+	err  error
+}
+
+func sharedTemplateURL(t *testing.T) string {
+	t.Helper()
+	sharedTemplate.once.Do(func() {
+		ctx := context.Background()
+		url, _, err := runPostgres(ctx)
+		if err == nil {
+			err = schema.Migrate(ctx, url)
+		}
+		sharedTemplate.url, sharedTemplate.err = url, err
+	})
+	if sharedTemplate.err != nil {
+		t.Fatal(sharedTemplate.err)
+	}
+	return sharedTemplate.url
 }
 
 // cloneDatabase makes a copy of the database in templateURL and drops it when the test ends.

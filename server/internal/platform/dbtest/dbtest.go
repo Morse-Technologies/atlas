@@ -54,18 +54,28 @@ func StartOwner(t *testing.T) string { return startPostgres(t) }
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
+	ownerURL, terminate, err := runPostgres(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(terminate)
+	return ownerURL
+}
+
+// runPostgres starts an empty Postgres and returns the URL of its owner role and a function that stops it.
+func runPostgres(ctx context.Context) (string, func(), error) {
 	c, err := postgres.Run(ctx, image, postgres.WithDatabase("atlas"), postgres.WithUsername("postgres"),
 		postgres.WithPassword(ownerPassword), postgres.BasicWaitStrategies())
 	if err != nil {
-		t.Fatal(err)
+		return "", nil, err
 	}
-	t.Cleanup(func() { _ = c.Terminate(context.Background()) })
+	terminate := func() { _ = c.Terminate(context.Background()) }
 	ownerURL, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatal(err)
+		terminate()
+		return "", nil, err
 	}
-	return ownerURL
+	return ownerURL, terminate, nil
 }
 
 // enableAppLogin does what the deployment does: give atlas_app a password. Returns its connection URL.
