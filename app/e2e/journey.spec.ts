@@ -1,9 +1,9 @@
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { expect, request, test, type APIRequestContext, type Browser, type Locator, type Page, type Response } from "@playwright/test";
+import { ADMIN, saveAdminSecret } from "./admin";
 import { waitForSignInSlot } from "./signInPace";
 import { freshTotp } from "./totp";
 
-const ADMIN = { org: "Acme", name: "Ana Pérez", email: "ana@acme.test", password: "a-long-password-1" };
 // `dev-env.sh --pro` starts the stack with a signed license; without it the Pro screens must be closed.
 const PRO = process.env.ATLAS_E2E_EDITION === "pro";
 // The page size the interface asks for (app/src/features/hooks.ts); the paging test creates more people than this.
@@ -65,6 +65,7 @@ test.describe.serial("Atlas in a browser, from first setup to a cited answer", (
     await expect(page.getByRole("heading", { name: "Add the second factor" })).toBeVisible();
     secret = ((await page.locator("code").first().textContent()) ?? "").trim();
     expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
+    saveAdminSecret(secret);
     await typeCode(page);
 
     await expect(page.getByRole("heading", { name: "Where are your documents?" })).toBeVisible();
@@ -158,11 +159,6 @@ test.describe.serial("Atlas in a browser, from first setup to a cited answer", (
     await choice("Any (accents ignored)").click(); // leave it as it was
     await expect(choice("Any (accents ignored)")).toHaveAttribute("aria-checked", "true");
     expect((await anySaved).ok()).toBe(true);
-  });
-
-  test("an administrator who is not an auditor is told why the audit log is closed to them", async () => {
-    await page.goto("/audit");
-    await expect(page.getByText("Only auditors can read the audit log.")).toBeVisible();
   });
 
   test("a source is restricted to some people from the Sources screen and opened again", async () => {
@@ -339,104 +335,6 @@ test.describe.serial("Atlas in a browser, from first setup to a cited answer", (
       await expect(page.getByText("This installation runs Atlas Core.")).toBeVisible();
       await expect(page.getByRole("link", { name: "Open Settings" })).toBeVisible();
     }
-  });
-
-  test("alerts list the real problems and a decision is kept by the server", async () => {
-    test.skip(!PRO, "needs a Pro license");
-    await page.goto("/alerts");
-    await expect(page.getByRole("heading", { name: "Alerts", exact: true })).toBeVisible();
-    // Documents without an owner raise NO_OWNER alerts once indexed.
-    await expect(async () => {
-      await page.reload();
-      await expect(page.getByRole("radio", { name: /^Open\s*[1-9]/ })).toBeVisible({ timeout: 2_000 });
-    }).toPass(INDEXING);
-    const open = page.getByRole("radio", { name: /^Open/ });
-    const before = Number(((await open.textContent()) ?? "").replace(/\D/g, ""));
-    expect(before).toBeGreaterThan(0);
-
-    const ack = page.getByRole("button", { name: /^Acknowledge/ });
-    await ack.hover();
-    await page.mouse.down();
-    await page.waitForTimeout(1_200); // the button is held, not clicked
-    await page.mouse.up();
-    await expect(page.getByText(/Acknowledged\. It stays/)).toBeVisible();
-    await page.reload();
-    await expect(page.getByRole("radio", { name: /^Open/ })).toContainText(String(before - 1));
-    await expect(page.getByRole("radio", { name: /^Acknowledged/ })).toContainText("1");
-  });
-
-  test("the map shows the documents and opens one", async () => {
-    test.skip(!PRO, "needs a Pro license");
-    // The map draws links, and the sample documents link to nothing: giving them one code makes them duplicates.
-    const docs = (await (await page.request.get("/api/v1/documents?limit=50")).json()) as { id: string }[];
-    for (const d of docs) {
-      const fixed = await page.request.patch(`/api/v1/documents/${d.id}/metadata`, { data: { code: "PNT-014" } });
-      expect(fixed.ok()).toBe(true);
-    }
-    await expect(async () => {
-      await page.goto("/map");
-      await expect(page.locator('[aria-label^="document "]').first()).toBeVisible({ timeout: 3_000 });
-    }).toPass({ timeout: 60_000 });
-    await expect(page.getByRole("heading", { name: "Map", exact: true })).toBeVisible();
-    await page.locator('[aria-label^="document "]').first().click();
-    await page.getByRole("link", { name: /^Open / }).first().click();
-    await expect(page).toHaveURL(/\/documents\/[^/?]+/);
-    // The documents now share one code, so each lists the others as related.
-    await expect(page.getByText("Same code or copy").first()).toBeVisible();
-  });
-
-  test("the map offers only what the server draws", async () => {
-    test.skip(!PRO, "needs a Pro license");
-    await page.goto("/map");
-    await expect(page.getByRole("checkbox", { name: /^References and mentions/ })).toBeVisible();
-    await expect(page.getByRole("checkbox", { name: /^Same code/ })).toBeVisible();
-    await expect(page.getByText("Similarity")).toHaveCount(0);
-    await expect(page.getByText("Model judgement")).toHaveCount(0);
-    await expect(page.getByText("Contradicts (suggested)")).toHaveCount(0);
-    await page.locator('[aria-label^="document "]').first().click();
-    await expect(page.getByRole("button", { name: /^Reject link to/ }).first()).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Confirm link to/ })).toHaveCount(0);
-  });
-
-  test("a link is rejected from the map and is not drawn again after a reload", async () => {
-    test.skip(!PRO, "needs a Pro license");
-    await page.goto("/map");
-    const node = page.locator('[aria-label^="document "]').first();
-    await expect(node).toBeVisible();
-    const nodeId = (await node.getAttribute("data-id")) ?? ""; // two documents share a code, so the label alone is not unique
-    await node.click();
-    const reject = page.getByRole("button", { name: /^Reject link to/ });
-    await expect(reject.first()).toBeVisible();
-    const before = await reject.count();
-    await reject.first().click();
-    await expect(page.getByText(/Link to .* rejected/)).toBeVisible();
-    await page.reload();
-    await page.locator(`[data-id="${nodeId}"]`).click();
-    await expect(page.getByText("Visible links")).toBeVisible();
-    expect(await reject.count()).toBeLessThan(before);
-  });
-
-  test("the audit log lists what happened and its chain verifies", async () => {
-    test.skip(!PRO, "needs a Pro license");
-    // An administrator is not an auditor (separation of duties): the audit log needs the role added.
-    const me = (await (await page.request.get("/api/v1/me")).json()) as { id: string };
-    const granted = await page.request.patch(`/api/v1/users/${me.id}/roles`, { data: { roles: ["admin", "auditor"] } });
-    expect(granted.ok()).toBe(true);
-    await page.goto("/audit");
-    await page.getByRole("button", { name: "Verify chain" }).click();
-    await expect(page.getByText(/The chain is intact: all \d+ events check out/)).toBeVisible();
-    const downloads: string[] = [];
-    page.on("download", (d) => downloads.push(d.suggestedFilename()));
-    await page.getByRole("button", { name: "Signed report" }).click();
-    await page.getByRole("button", { name: "Download signed report" }).click();
-    await expect.poll(() => downloads.length).toBe(2); // the report and its signature
-    expect(downloads.some((n) => /^atlas-audit-.*\.csv$/.test(n)) && downloads.some((n) => n.endsWith(".csv.sig"))).toBe(true);
-  });
-
-  test("the dashboard counts the indexed documents", async () => {
-    await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Dashboard", exact: true })).toBeVisible();
-    await expect(page.getByText(/indexed/i).first()).toBeVisible();
   });
 
   test("a person added by the administrator is made to choose a password at the first sign-in", async ({ browser, baseURL }) => {

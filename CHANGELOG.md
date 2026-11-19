@@ -15,7 +15,7 @@ First release candidate of Atlas Core.
 - Sources and access: folders as sources, per-folder access rules, and people names recognised in documents.
 - Accounts: local users with roles, single-use codes, account recovery, lockout after repeated failures and
   the right to delete an account.
-- Audit: a tamper-evident audit trail of every administrative action and a signed export of it.
+- Audit: a tamper-evident audit trail of every administrative action.
 - Operations: retention rules, maintenance jobs, metrics, health checks, an evaluation command with sample
   questions, and licence installation.
 - Deployment: a Docker Compose stack with a reverse proxy, scheduled encrypted backups and restore, an upgrade

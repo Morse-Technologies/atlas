@@ -6,11 +6,11 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClie
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { canOpenScreen, hasAnyRole } from "@/features/shell/screenAccess";
-import { alertChanges, api } from "@/lib/api";
-import type { Alert, AlertPatch, Answer, Citation, Document, DocumentFilter, IngestionRun, MetadataPatch, NewSource, Page, PasswordChange, Person, ProFeature, Role, Settings, SettingsPatch, Source, SourceAccessInput } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { Answer, Citation, Document, DocumentFilter, IngestionRun, MetadataPatch, NewSource, Page, PasswordChange, Person, ProFeature, Role, Settings, SettingsPatch, Source, SourceAccessInput } from "@/lib/api";
 
 /** A list read page by page: `rows` is every row loaded so far, and `fetchNextPage` loads the next 50. */
-function useRows<T>(queryKey: unknown[], read: (cursor?: string) => Promise<Page<T>>, enabled = true) {
+export function useRows<T>(queryKey: unknown[], read: (cursor?: string) => Promise<Page<T>>, enabled = true) {
   return useInfiniteQuery({
     queryKey, enabled, queryFn: ({ pageParam }) => read(pageParam),
     initialPageParam: undefined as string | undefined,
@@ -38,7 +38,7 @@ export function undoable<T>(opts: { pending: string; done: string; run: () => Pr
 }
 
 /** Optimistic list patch with rollback. */
-async function patchList<T extends { id: string }>(qc: QueryClient, key: unknown[], change: { id: string; patch: Partial<T> }) {
+export async function patchList<T extends { id: string }>(qc: QueryClient, key: unknown[], change: { id: string; patch: Partial<T> }) {
   const { id, patch } = change;
   await qc.cancelQueries({ queryKey: key });
   const prev = qc.getQueryData<T[]>(key);
@@ -73,11 +73,6 @@ export function useCanOpenScreen() {
   return useCallback((href: string) => canOpenScreen(roles ?? NO_ROLES, href), [roles]);
 }
 const NO_ROLES: readonly Role[] = [];
-/** Judging links needs curator; an administrator may do anything but read the audit log. */
-export function useCanDecideLinks() {
-  const roles = useMe().data?.roles ?? [];
-  return roles.includes("curator") || roles.includes("admin");
-}
 // shortcut: loads every row, for the screens that look people up by id; replace with per-id fetches if lists pass a few thousand.
 export const usePeople = () => useQuery({ queryKey: ["people"], queryFn: api.people });
 export const usePeopleNames = () => useQuery({ queryKey: ["people", "names"], queryFn: api.peopleNames });
@@ -269,35 +264,6 @@ export function useAlerts() {
   const canOpen = useCanOpenScreen()("/alerts");
   return useQuery({ queryKey: ["alerts"], queryFn: api.alerts, refetchInterval: 60_000, enabled: enabled && canOpen });
 }
-export function useUpdateAlert() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, patch, key }: { id: string; patch: AlertPatch; key: string }) => api.updateAlert(id, patch, key),
-    onMutate: ({ id, patch }) => patchList<Alert>(qc, ["alerts"], { id, patch: alertChanges(patch) }),
-    onError: (_e, _v, rollback) => rollback?.(),
-    onSettled: () => { qc.invalidateQueries({ queryKey: ["alerts"] }); qc.invalidateQueries({ queryKey: ["overview"] }); },
-  });
-}
-export function useGraph() {
-  const { enabled } = useFeature("map");
-  return useQuery({ queryKey: ["graph"], queryFn: api.graph, enabled });
-}
-
-export function useDecideEdge() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, status, key }: { id: string; status: "confirmed" | "rejected"; key: string }) => api.decideEdge(id, status, key),
-    onSuccess: () => ["graph", "related"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })),
-  });
-}
-
-/* audit */
-// shortcut: loads every event, for the dashboard widget that counts them; replace with a count endpoint if logs pass a few thousand.
-export const useAudit = (enabled: boolean) => useQuery({ queryKey: ["audit"], queryFn: api.audit, enabled });
-export const useAuditPages = (enabled: boolean) => useRows(["audit", "pages"], (cursor) => api.auditPage(cursor), enabled);
-export const useExportAudit = () => useMutation({ mutationFn: api.exportAudit });
-export const useVerifyAudit = () => useMutation({ mutationFn: api.verifyAudit });
-
 /* settings */
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: api.settings });
 export function useUpdateSettings() {

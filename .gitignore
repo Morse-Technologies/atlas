@@ -41,6 +41,9 @@ app/src/app/(app)/audit/
 app/src/features/admin/AuditScreen.tsx
 app/src/features/admin/SignedReport.tsx
 app/src/lib/download.ts
+# Pro-only hooks and end-to-end journeys
+app/src/features/proHooks.ts
+app/e2e/pro.spec.ts
 
 # Local deploy secrets and mounted sources
 deploy/compose/.env
