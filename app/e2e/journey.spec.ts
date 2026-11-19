@@ -421,6 +421,24 @@ test.describe.serial("Atlas in a browser, from first setup to a cited answer", (
     await Promise.all([eliPage.context().close(), eli.dispose(), again.dispose()]);
   });
 
+  test("an administrator changes a person's role and deletes their account from the Users screen", async () => {
+    const NIA: NewPerson = { name: "Nia Roles", email: "nia@acme.test", roles: ["viewer"], secondFactor: false };
+    await addPerson(page, NIA);
+    await page.goto("/users");
+    await page.getByRole("button", { name: "Edit roles for Nia Roles" }).click();
+    await page.getByRole("checkbox", { name: /Edit metadata/ }).click();
+    await page.getByRole("button", { name: "Save roles" }).click();
+    await expect(page.getByText("Roles updated for Nia Roles")).toBeVisible();
+
+    await page.reload();
+    await page.getByRole("button", { name: "Edit roles for Nia Roles" }).click();
+    await expect(page.getByRole("checkbox", { name: /Edit metadata/ })).toBeChecked();
+    await hold(page.getByRole("button", { name: "Hold to delete" }));
+    await expect(page.getByText("Nia Roles's account was deleted")).toBeVisible();
+    await page.reload();
+    await expect(page.getByText("Nia Roles")).toHaveCount(0);
+  });
+
   test("the Users list loads the next page when scrolled to the end", async () => {
     for (let n = 1; n <= PAGING_PEOPLE; n++) {
       const tag = String(n).padStart(2, "0");
