@@ -19,6 +19,8 @@ jobs:
         run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
       # Every base image pinned by digest, and no fake model servers in the production image.
       - run: deploy/scripts/check-digests.sh
+      # Fails when Morse's license public key is missing or invalid.
+      - run: make -C server check-prod-build
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

@@ -1,7 +1,7 @@
 TOOL    := go tool -modfile=$(CURDIR)/tools/go.mod
 COMPOSE := docker compose -f ../deploy/compose/compose.yaml
 
-.PHONY: gen lint vuln test test-integration test-golden e2e up down
+.PHONY: gen lint vuln test test-integration test-golden e2e check-prod-build up down
 
 ## gen: regenerate sqlc queries and the OpenAPI server
 gen:
@@ -32,6 +32,10 @@ test-golden:
 ## e2e: a clean development stack with fake models, then the API and browser journeys (Docker required)
 e2e:
 	../deploy/scripts/e2e.sh
+
+## check-prod-build: fails while Morse's public key is missing or invalid (not part of make check until the key is embedded)
+check-prod-build:
+	sh scripts/check-license-key.sh internal/platform/license/morse_ed25519.pub ""
 
 ## up / down: the compose stack (uses deploy/compose/.env; deploy/scripts/dev-env.sh makes a development one)
 up:
