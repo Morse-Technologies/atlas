@@ -114,6 +114,7 @@ function SourcesAdmin() {
       <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         <Card id="runs-h" title="Recent runs" aside={runs.data ? `Last ${runs.data.length}, newest first` : undefined}>
           {runs.isPending ? <LoadingRows rows={6} pitch="h-11" /> : runs.isError ? <ErrorState what="runs" onRetry={() => runs.refetch()} />
+            : !runs.data.length ? <EmptyState>No scans yet. They appear here once a source is read.</EmptyState>
             : <RunsTable runs={[...runs.data].sort(runningFirst)} names={names} />}
         </Card>
         <Card id="q-h" title="Quarantine" aside={`${q} ${q === 1 ? "file" : "files"}`}>

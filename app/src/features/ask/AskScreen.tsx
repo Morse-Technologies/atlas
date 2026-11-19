@@ -9,7 +9,7 @@ import type { Answer, Document, PersonName } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { demo } from "@/lib/demo";
 import { Button, Kbd, Mark, Skeleton, Tooltip, buttonStyles } from "@/ui/atoms";
-import { ErrorState, Sheet } from "@/ui/cells";
+import { EmptyState, ErrorState, Sheet } from "@/ui/cells";
 import { AskComposer, AssistantMessage, HistoryList, UserMessage } from "@/ui/organisms/Assistant";
 
 const HISTORY_SKELETON_ROWS = 5;
@@ -129,7 +129,9 @@ function ChatHistory({ activeId, onPick }: { activeId?: string; onPick?: () => v
   if (conversations.isPending) {
     return <div className="flex flex-col gap-2 px-2.5">{Array.from({ length: HISTORY_SKELETON_ROWS }, (_, i) => <Skeleton key={i} className="h-5 w-full" />)}</div>;
   }
-  return <HistoryList items={conversations.data ?? []} activeId={activeId} onPick={onPick} />;
+  if (conversations.isError) return <ErrorState what="your chats" onRetry={() => conversations.refetch()} />;
+  if (!conversations.data.length) return <EmptyState>No chats yet. Ask a question to start one.</EmptyState>;
+  return <HistoryList items={conversations.data} activeId={activeId} onPick={onPick} />;
 }
 
 function HistoryAside({ activeId }: { activeId?: string }) {

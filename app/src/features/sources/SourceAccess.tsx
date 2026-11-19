@@ -3,7 +3,7 @@ import { useState } from "react";
 import { newKey, usePeople, useSourceActions } from "@/features/hooks";
 import type { Person, Source } from "@/lib/api/types";
 import { Button, Checkbox } from "@/ui/atoms";
-import { Card, Sheet } from "@/ui/cells";
+import { Card, ErrorState, Sheet } from "@/ui/cells";
 
 const summary = (s: Source, people: Person[]) => {
   if (s.access === "everyone") return "Everyone who signs in";
@@ -13,11 +13,13 @@ const summary = (s: Source, people: Person[]) => {
 
 /** Who may read each source: everyone, or the people listed. Hidden documents do not exist for the others. */
 export function SourceAccess({ sources }: { sources: Source[] }) {
-  const people = usePeople().data ?? [];
+  const peopleQuery = usePeople();
+  const people = peopleQuery.data ?? [];
   const [editing, setEditing] = useState<Source | null>(null);
   const folders = sources.filter((s) => s.kind === "folder" || s.kind === "upload");
   return (
     <Card id="access-h" title="Who can read" aside="Per source" className="mt-5">
+      {peopleQuery.isError && <ErrorState what="the people list" onRetry={() => peopleQuery.refetch()} className="mx-5 mb-3" />}
       <ul className="divide-y divide-rule">
         {folders.map((s) => (
           <li key={s.id} className="flex items-center justify-between gap-4 px-5 py-3">

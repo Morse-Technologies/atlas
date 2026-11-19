@@ -87,7 +87,7 @@ function AnswerText({
     gsap.fromTo(fresh, { opacity: 0, y: 4 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out", stagger: 0.015, clearProps: "transform" });
   }, [text, streaming]);
   return (
-    <div ref={box} className="space-y-3 text-[16px] leading-[1.7]" aria-live={streaming ? "polite" : undefined} aria-busy={streaming}>
+    <div ref={box} className="space-y-3 text-[16px] leading-[1.7]" aria-live="polite" aria-busy={streaming}>
       {paragraphs.map((p, pi) => (
         <p key={pi}>
           {p.split(/(\[\d+\])/g).map((part, i) => {

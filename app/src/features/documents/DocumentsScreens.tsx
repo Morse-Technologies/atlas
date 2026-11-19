@@ -27,6 +27,12 @@ const usePeopleMap = () => {
   return useMemo(() => new Map<string, PersonName>((data ?? []).map((p) => [p.id, p])), [data]);
 };
 
+/** Owners show as names; when the names fail to load, say so instead of leaving the owners blank. */
+function PeopleNamesError() {
+  const { isError, refetch } = usePeopleNames();
+  return isError ? <ErrorState what="people's names" onRetry={() => refetch()} className="mb-4" /> : null;
+}
+
 /** For a format the viewer cannot show (spreadsheets): say so and offer the original. */
 function NoPreview({ doc }: { doc: Document }) {
   return (
@@ -91,6 +97,7 @@ export function DocumentsScreen() {
         <span className="ml-auto text-small text-muted num" aria-live="polite">{data ? `${data.length} loaded` : ""}</span>
       </div>
       <div className="mt-5">
+        <PeopleNamesError />
         {isPending ? <LoadingRows rows={8} pitch="h-14" /> : isError ? <ErrorState what="documents" onRetry={() => refetch()} />
           : <DocumentTable rows={data} people={people} total={total} />}
         {data && <LoadMore loaded={data.length} hasMore={!!hasNextPage} loading={isFetchingNextPage} onLoadMore={() => void fetchNextPage()} />}
@@ -138,11 +145,13 @@ export function DocumentScreen({ id }: { id: string }) {
           <>
             <DocumentHeader doc={doc} owner={owner} backHref={from ? `/ask/${from}` : undefined} />
             <DetailSection title="Metadata" aside={canEdit ? <EditMetadata doc={doc} /> : <span className="text-small text-muted">and where each value came from</span>}>
+              <PeopleNamesError />
               <MetadataList rows={doc.provenance} people={people} />
             </DetailSection>
             <DetailSection title={`Revisions (${doc.versions.length})`}><Revisions versions={doc.versions} current={doc.currentVersionId} /></DetailSection>
             <DetailSection title="Related">
-              {related.isPending ? <LoadingRows rows={2} pitch="h-8" /> : <RelatedDocs items={related.data ?? []} />}
+              {related.isPending ? <LoadingRows rows={2} pitch="h-8" /> : related.isError ? <ErrorState what="related documents" onRetry={() => related.refetch()} />
+                : <RelatedDocs items={related.data} />}
             </DetailSection>
             <DetailSection title="Location">
               <Location path={doc.path} source={sources?.find((s) => s.id === doc.sourceId)?.name ?? ""} />

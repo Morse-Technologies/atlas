@@ -31,7 +31,7 @@ export function CommandPalette({
 
   return (
     <Modal open={open} onOpenChange={onOpenChange} title="Search or ask" labelHidden instant className="overflow-hidden">
-      <div className="flex items-center gap-3 border-b border-rule px-4">
+      <div className="flex items-center gap-3 border-b border-rule px-4 focus-within:ring-2 focus-within:ring-inset focus-within:ring-accent/40">
         <Search aria-hidden className="size-4 text-muted" />
         <input
           autoFocus
