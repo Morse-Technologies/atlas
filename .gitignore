@@ -61,3 +61,6 @@ deploy/perf-results/
 # Backups of an installation and the keys that encrypt them.
 deploy/backups/
 deploy/compose/backup-keys/
+
+# Binario de server/cmd/perfrun (go build)
+/server/cmd/perfrun/perfrun
