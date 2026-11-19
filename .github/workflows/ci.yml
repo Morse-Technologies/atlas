@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - run: go vet ./...
+      - run: make lint
+      - run: make test
+      # Known vulnerabilities in the Go toolchain and the dependencies the code calls (needs the network).
+      - run: make vuln
+      # Real Postgres 18 with pgvector through testcontainers; the runner has Docker.
+      - run: make test-integration
+
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm check:demo-leak
+      - run: pnpm audit --prod --audit-level high
+
+  # The tests of the version already in main must still pass on the schema of the pull request: an old server
+  # keeps running on the new schema while an upgrade is in progress.
+  migration:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+        env:
+          POSTGRES_DB: atlas
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ATLAS_MIGRATE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/atlas?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: schema
+        name: Does the pull request change the schema?
+        run: |
+          if git diff --quiet "${{ github.event.pull_request.base.sha }}" HEAD -- server/db/migrations; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.schema.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - if: steps.schema.outputs.changed == 'true'
+        name: Migrate the database with the schema of the pull request
+        working-directory: server
+        run: go run ./cmd/atlas migrate
+      - if: steps.schema.outputs.changed == 'true'
+        name: Check out the previous version next to it
+        run: git worktree add previous "${{ github.event.pull_request.base.sha }}"
+      - if: steps.schema.outputs.changed == 'true'
+        name: Run the integration tests of the previous version on that schema
+        working-directory: previous/server
+        env:
+          ATLAS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/atlas?sslmode=disable
+          ATLAS_TEST_SKIP_MIGRATE: "1"
+        run: |
+          # Until the base has this support itself (the first pull request that brings it), borrow the helper.
+          grep -rq ATLAS_TEST_SKIP_MIGRATE internal/platform/dbtest || \
+            cp "$GITHUB_WORKSPACE"/server/internal/platform/dbtest/*.go internal/platform/dbtest/
+          go test -tags integration ./...
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The Compose file is valid with every profile
+        working-directory: deploy/compose
+        env:
+          ATLAS_OWNER_PASSWORD: ci
+          ATLAS_APP_PASSWORD: ci
+          ATLAS_SECRET_KEY: ci
+        run: docker compose --profile models --profile gpu --profile cpu --profile fake --profile backup config -q
+      - run: for f in deploy/scripts/*.sh; do bash -n "$f"; done
+      - run: bash deploy/scripts/upgrade_test.sh
+      # Every image pinned by digest, and no fake model servers in the production image.
+      - run: deploy/scripts/check-digests.sh
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [server, app, compose]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: app
+      # A clean stack with the fake model servers: API and browser journeys, then the same with a signed Pro license.
+      - run: make e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: app/test-results
